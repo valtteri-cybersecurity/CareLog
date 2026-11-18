@@ -1,2 +1,3 @@
-PyMySQL
+PyMySQL[rsa]
 python-dotenv
+pytest
