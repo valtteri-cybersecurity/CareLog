@@ -10,6 +10,7 @@ DB_USER="carelog_app"
 MIGRATION_USER="carelog_migrator"
 PYTHON=".venv/bin/python"
 MIGRATION_USER_CREATED=0
+APP_PERMISSIONS_RESET=0
 
 fail() {
     echo "Error: $1" >&2
@@ -32,6 +33,15 @@ drop_migration_user() {
 cleanup() {
     status=$?
     trap - EXIT
+    if [ "$APP_PERMISSIONS_RESET" -eq 1 ]; then
+        if ! grant_app_permissions; then
+            echo "WARNING: Could not restore all carelog_app permissions." >&2
+            if ! mysql_admin -e "ALTER USER '$DB_USER'@'localhost' ACCOUNT UNLOCK"; then
+                echo "CRITICAL: Could not unlock carelog_app. Manual review required." >&2
+            fi
+            status=1
+        fi
+    fi
     if ! drop_migration_user; then
         echo "CRITICAL: Could not remove carelog_migrator. Remove it manually." >&2
         status=1
@@ -103,12 +113,12 @@ prepare_database() {
 CREATE DATABASE \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER '$DB_USER'@'localhost' IDENTIFIED BY '$app_password';
 SQL
-        cat > .env <<EOF
+        cat > .env <<ENV
 CARELOG_HOST=localhost
 CARELOG_DATABASE=$DB_NAME
 CARELOG_USER=$DB_USER
 CARELOG_PASSWORD=$app_password
-EOF
+ENV
         unset app_password
         echo "Database and application account created."
     fi
@@ -117,7 +127,7 @@ EOF
     "$PYTHON" - "$DB_NAME" "$DB_USER" <<'PYTHON'
 import sys
 
-from carelog.database.connection import get_connection, load_config
+from carelog.database.connection import load_config
 
 database, user = sys.argv[1:]
 config = load_config()
@@ -125,7 +135,16 @@ if config["CARELOG_HOST"] != "localhost":
     raise SystemExit("Invalid CARELOG_HOST in .env")
 if config["CARELOG_DATABASE"] != database or config["CARELOG_USER"] != user:
     raise SystemExit("Invalid database or application user in .env")
+PYTHON
+}
 
+validate_app_connection() {
+    "$PYTHON" - "$DB_USER" <<'PYTHON'
+import sys
+
+from carelog.database.connection import get_connection
+
+user = sys.argv[1]
 with get_connection(database="") as connection, connection.cursor() as cursor:
     cursor.execute("SELECT CURRENT_USER()")
     if cursor.fetchone()[0] != user + "@localhost":
@@ -155,17 +174,22 @@ check_app_permissions() {
     done <<< "$grants"
 
     locked="$(mysql_admin -N -s -e "SELECT account_locked FROM mysql.user WHERE User = '$DB_USER' AND Host = 'localhost'")"
-    if [ "$locked" != "N" ]; then
-        fail "Application account is locked or missing. Manual review required"
+    if [ "$locked" != "N" ] && [ "$locked" != "Y" ]; then
+        fail "Application account is missing. Manual review required"
+    fi
+    if [ "$locked" = "Y" ]; then
+        echo "Application account is locked; checking credentials before recovery."
+        # Unlock only after checking that its grants are restricted to CareLog.
+        mysql_admin -e "ALTER USER '$DB_USER'@'localhost' ACCOUNT UNLOCK"
     fi
 }
 
 reset_app_permissions() {
     mysql_admin -e "ALTER USER '$DB_USER'@'localhost' ACCOUNT LOCK"
+    APP_PERMISSIONS_RESET=1
     local sessions
     sessions="$(mysql_admin -N -s -e "SELECT COUNT(*) FROM information_schema.processlist WHERE USER = '$DB_USER'")"
     if [ "$sessions" -ne 0 ]; then
-        mysql_admin -e "ALTER USER '$DB_USER'@'localhost' ACCOUNT UNLOCK"
         fail "Stop the application and close its database sessions before retrying"
     fi
 
@@ -183,6 +207,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON \`$DB_NAME\`.visit_notes TO '$DB_USER'@'
 GRANT SELECT, INSERT, UPDATE, DELETE ON \`$DB_NAME\`.expenses TO '$DB_USER'@'localhost';
 ALTER USER '$DB_USER'@'localhost' ACCOUNT UNLOCK;
 SQL
+    APP_PERMISSIONS_RESET=0
 }
 
 check_migration_user() {
@@ -231,6 +256,7 @@ main() {
     prepare_database
     check_schema
     check_app_permissions
+    validate_app_connection
     run_migrations
     echo "CareLog installation completed successfully."
 }
