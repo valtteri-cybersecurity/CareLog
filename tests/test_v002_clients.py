@@ -1,4 +1,3 @@
-
 from pymysql.constants import ER
 
 from carelog.database.migrations import v002_clients
@@ -45,14 +44,14 @@ def test_table_constraints(cursor):
 
     assert_mysql_error(
         cursor, ER.DUP_ENTRY,
-        "INSERT INTO clients (id, first_name, last_name, created_at) "
-        "VALUES (%s, 'Other', 'Client', CURRENT_TIMESTAMP)",
+        "INSERT INTO clients (id, first_name, last_name) "
+        "VALUES (%s, 'Other', 'Client')",
         (client_id,),
     )
 
     assert_mysql_error(
         cursor, ER.BAD_NULL_ERROR,
-        "INSERT INTO clients (first_name, last_name, created_at) "
-        "VALUES ('Test', NULL, CURRENT_TIMESTAMP)",
+        "INSERT INTO clients (first_name, last_name) "
+        "VALUES ('Test', NULL)",
     )
 
