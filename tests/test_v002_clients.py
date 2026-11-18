@@ -1,3 +1,4 @@
+
 from pymysql.constants import ER
 
 from carelog.database.migrations import v002_clients
@@ -25,12 +26,12 @@ def test_table_structure(cursor):
         ("last_name", "varchar(100)", "NO", None),
         ("phone", "varchar(50)", "YES", None),
         ("email", "varchar(255)", "YES", None),
-        ("street_adress", "varchar(255)", "YES", None),
+        ("street_address", "varchar(255)", "YES", None),
         ("postal_code", "varchar(20)", "YES", None),
         ("city", "varchar(100)", "YES", None),
         ("distance_from_home_km", "decimal(10,2)", "YES", None),
         ("archived_at", "datetime", "YES", None),
-        ("created_at", "timestamp", "NO", None),
+        ("created_at", "timestamp", "NO", "CURRENT_TIMESTAMP"),
         ("updated_at", "timestamp", "NO", "CURRENT_TIMESTAMP"),
     )
 
@@ -48,8 +49,10 @@ def test_table_constraints(cursor):
         "VALUES (%s, 'Other', 'Client', CURRENT_TIMESTAMP)",
         (client_id,),
     )
+
     assert_mysql_error(
         cursor, ER.BAD_NULL_ERROR,
         "INSERT INTO clients (first_name, last_name, created_at) "
         "VALUES ('Test', NULL, CURRENT_TIMESTAMP)",
     )
+

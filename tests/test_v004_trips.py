@@ -26,6 +26,7 @@ def test_table_structure(cursor_with_clients):
         ("client_id", "int", "NO", None),
         ("start_location", "varchar(255)", "NO", None),
         ("destination", "varchar(255)", "NO", None),
+        ("distance_km", "decimal(10,2)", "YES", None),
     )
 
 
@@ -35,11 +36,13 @@ def test_table_constraints(cursor_with_clients):
     assert get_primary_key(cursor, "trips") == ["id"]
 
     client_id = insert_client(cursor)
+
     cursor.execute(
         "INSERT INTO trips (client_id, start_location, destination) "
         "VALUES (%s, 'Home', 'Shop')",
         (client_id,),
     )
+
     trip_id = cursor.lastrowid
     assert trip_id > 0
 
@@ -49,6 +52,7 @@ def test_table_constraints(cursor_with_clients):
         "VALUES (%s, %s, 'Home', 'Pharmacy')",
         (trip_id, client_id),
     )
+
     assert_mysql_error(
         cursor, ER.NO_REFERENCED_ROW_2,
         "INSERT INTO trips (client_id, start_location, destination) "
@@ -56,6 +60,15 @@ def test_table_constraints(cursor_with_clients):
         (client_id + 1,),
     )
 
-    cursor.execute("DELETE FROM clients WHERE id = %s", (client_id,))
-    cursor.execute("SELECT id FROM trips WHERE id = %s", (trip_id,))
+    cursor.execute(
+        "DELETE FROM clients WHERE id = %s",
+        (client_id,),
+    )
+
+    cursor.execute(
+        "SELECT id FROM trips WHERE id = %s",
+        (trip_id,),
+    )
+
     assert cursor.fetchone() is None
+

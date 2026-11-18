@@ -22,6 +22,8 @@ def test_table_structure(cursor):
     assert get_columns(cursor, "services") == (
         ("id", "int", "NO", None),
         ("name", "varchar(150)", "NO", None),
+        ("description", "text", "YES", None),
+        ("default_hourly_rate", "decimal(10,2)", "YES", None),
     )
 
 
@@ -37,7 +39,9 @@ def test_table_constraints(cursor):
         "INSERT INTO services (id, name) VALUES (%s, 'Other service')",
         (service_id,),
     )
+
     assert_mysql_error(
         cursor, ER.BAD_NULL_ERROR,
         "INSERT INTO services (name) VALUES (NULL)",
     )
+
