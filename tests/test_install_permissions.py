@@ -203,9 +203,13 @@ def test_application_privileges_and_reinstallation(installer_database):
         )
 
 
-def test_failed_installation_leaves_app_locked_and_removes_migrator(installer_database):
-    cursor, env, _ = installer_database
+def test_failed_installation_restores_app_and_allows_retry(installer_database):
+    cursor, env, connect_app = installer_database
     database = env["CARELOG_TEST_DATABASE"]
+
+    result = install_database(env)
+    assert result.returncode == 0, result.stderr
+
     cursor.execute(
         f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* TO 'carelog_app'@'localhost'"
     )
@@ -216,12 +220,24 @@ def test_failed_installation_leaves_app_locked_and_removes_migrator(installer_da
     assert result.returncode != 0
     assert "Simulated migration failure" in result.stderr
     assert_no_migrator(cursor)
-    cursor.execute("SHOW GRANTS FOR 'carelog_app'@'localhost'")
-    assert cursor.fetchall() == (("GRANT USAGE ON *.* TO `carelog_app`@`localhost`",),)
     cursor.execute(
         "SELECT account_locked FROM mysql.user WHERE User = 'carelog_app' AND Host = 'localhost'"
     )
-    assert cursor.fetchone() == ("Y",)
+    assert cursor.fetchone() == ("N",)
+
+    with connect_app() as app, app.cursor() as app_cursor:
+        app_cursor.execute("SELECT name FROM services")
+        assert app_cursor.fetchall() == ()
+        assert_mysql_error(
+            app_cursor, ER.TABLEACCESS_DENIED_ERROR,
+            "SELECT version FROM schema_migrations",
+        )
+
+    env.pop("CARELOG_TEST_MIGRATION_FAILURE")
+    result = install_database(env)
+    assert result.returncode == 0, result.stderr
+    assert_no_migrator(cursor)
+    assert migrate.get_applied_versions(cursor) == set(range(1, 8))
 
 
 def test_active_application_session_blocks_reinstallation(installer_database):
