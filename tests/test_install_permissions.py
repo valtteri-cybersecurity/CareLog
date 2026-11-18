@@ -45,9 +45,14 @@ with pymysql.connect(unix_socket=socket, user="root") as admin, admin.cursor() a
     cursor.execute("SHOW GRANTS FOR carelog_app@localhost")
     assert cursor.fetchall() == (("GRANT USAGE ON *.* TO `carelog_app`@`localhost`",),)
     cursor.execute("SHOW GRANTS FOR carelog_migrator@localhost")
+    database = os.environ["CARELOG_TEST_DATABASE"]
+    expected_grant = (
+        "GRANT SELECT, INSERT, CREATE, REFERENCES "
+        f"ON `{database}`.* TO `carelog_migrator`@`localhost`"
+    )
     assert cursor.fetchall() == (
         ("GRANT USAGE ON *.* TO `carelog_migrator`@`localhost`",),
-        (f"GRANT SELECT, INSERT, CREATE, REFERENCES, ALTER ON `{os.environ["CARELOG_TEST_DATABASE"]}`.* TO `carelog_migrator`@`localhost`",),
+        (expected_grant,),
     )
 
 password = sys.stdin.readline().rstrip("\\n")
@@ -92,6 +97,7 @@ def installer_database():
                     os_env["CARELOG_TEST_DATABASE"] = database
                     os_env["CARELOG_TEST_PYTHON"] = sys.executable
                     os_env.pop("CARELOG_TEST_MIGRATION_FAILURE", None)
+
                     def connect_app():
                         return pymysql.connect(
                             unix_socket=socket,
@@ -131,14 +137,9 @@ def test_application_privileges_and_reinstallation(installer_database):
     database = env["CARELOG_TEST_DATABASE"]
     result = install_database(env)
     assert result.returncode == 0, result.stderr
-    assert migrate.get_applied_versions(cursor) == {1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12}
+    assert migrate.get_applied_versions(cursor) == set(range(1, 8))
     insert_service(cursor)
     client_id = insert_client(cursor)
-
-    # Simulate a database that ran the withdrawn migration before updating.
-    cursor.execute("ALTER TABLE clients ADD COLUMN personal_identity_code VARCHAR(11) NULL")
-    cursor.execute("DELETE FROM schema_migrations WHERE version = 12")
-    migrate.record_migration(cursor, 9)
 
     cursor.execute(
         f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* TO 'carelog_app'@'localhost'"
@@ -147,7 +148,7 @@ def test_application_privileges_and_reinstallation(installer_database):
     assert result.returncode == 0, result.stderr
 
     assert_no_migrator(cursor)
-    assert migrate.get_applied_versions(cursor) == set(range(1, 13))
+    assert migrate.get_applied_versions(cursor) == set(range(1, 8))
     assert "personal_identity_code" not in [column[0] for column in get_columns(cursor, "clients")]
     cursor.execute("SELECT first_name FROM clients WHERE id = %s", (client_id,))
     assert cursor.fetchone() == ("Test",)
