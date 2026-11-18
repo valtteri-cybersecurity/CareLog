@@ -52,8 +52,8 @@ def assert_mysql_error(cursor, error_code, sql, values=()):
 
 def insert_client(cursor):
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name, created_at) "
-        "VALUES ('Test', 'Client', CURRENT_TIMESTAMP)"
+        "INSERT INTO clients (first_name, last_name) "
+        "VALUES ('Test', 'Client')"
     )
     return cursor.lastrowid
 
