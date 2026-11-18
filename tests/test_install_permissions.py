@@ -78,10 +78,19 @@ def installer_database():
     if os.getenv("CARELOG_TEST_INSTALLER") != "1" or not socket:
         pytest.skip("Set CARELOG_TEST_INSTALLER=1 and a dedicated local MySQL test socket")
 
+    expected_uuid = os.getenv("CARELOG_TEST_MYSQL_SERVER_UUID")
+    if not expected_uuid:
+        pytest.fail("Set CARELOG_TEST_MYSQL_SERVER_UUID for the dedicated test server")
+
     database = "carelogtest" + uuid4().hex
     password = "Aa1!" + token_hex(32)
     with pymysql.connect(unix_socket=socket, user="root", autocommit=True) as connection:
         with connection.cursor() as cursor:
+            cursor.execute("SELECT @@GLOBAL.server_uuid")
+            server_uuid = cursor.fetchone()[0]
+            if server_uuid != expected_uuid:
+                pytest.fail("Wrong MySQL server: refusing to run installer tests")
+
             cursor.execute(
                 "SELECT COUNT(*) FROM mysql.user "
                 "WHERE User IN ('carelog_app', 'carelog_migrator') AND Host = 'localhost'"
