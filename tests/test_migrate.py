@@ -1,6 +1,7 @@
 import pytest
 
 from carelog.database import migrate
+from carelog.database.migrations import v001_users
 from tests.migration_helpers import get_columns, table_exists
 
 
@@ -70,4 +71,78 @@ def test_run_migrations_creates_correct_columns(cursor, migration_database):
     for column in clients:
         assert column[0] != "personal_identity_code"
         assert column[0] != "street_adress"
+
+
+def test_interrupted_migration_recovers(cursor, migration_database):
+    migrate.create_migrations_table(cursor)
+    v001_users.upgrade(cursor)
+
+    cursor.execute(
+        "INSERT INTO users (email, display_name, password_hash) "
+        "VALUES ('test@example.com', 'Test', 'test-hash')"
+    )
+
+    migrate.run_migrations(migration_database, password="test-only")
+
+    assert migrate.get_applied_versions(cursor) == {1, 2, 3, 4, 5, 6, 7}
+
+    cursor.execute("SELECT email FROM users")
+    assert cursor.fetchone() == ("test@example.com",)
+
+
+def test_invalid_interrupted_migration_fails(cursor, migration_database):
+    migrate.create_migrations_table(cursor)
+    v001_users.upgrade(cursor)
+
+    cursor.execute(
+        "ALTER TABLE users MODIFY email VARCHAR(100) NOT NULL"
+    )
+
+    with pytest.raises(RuntimeError, match="Invalid columns"):
+        migrate.run_migrations(migration_database, password="test-only")
+
+    assert migrate.get_applied_versions(cursor) == set()
+
+
+def test_unknown_migration_version_fails(cursor, migration_database):
+    migrate.create_migrations_table(cursor)
+
+    cursor.execute(
+        "INSERT INTO schema_migrations (version) VALUES (999)"
+    )
+
+    with pytest.raises(RuntimeError, match="Unknown migration versions"):
+        migrate.run_migrations(migration_database, password="test-only")
+
+    assert not table_exists(cursor, "users")
+
+
+def test_changed_table_structure_fails(cursor, migration_database):
+    migrate.run_migrations(migration_database, password="test-only")
+
+    cursor.execute(
+        "ALTER TABLE services "
+        "MODIFY default_hourly_rate DECIMAL(12, 2) NULL"
+    )
+
+    with pytest.raises(RuntimeError, match="Invalid columns"):
+        migrate.run_migrations(migration_database, password="test-only")
+
+
+def test_missing_unique_constraint_fails(cursor, migration_database):
+    migrate.run_migrations(migration_database, password="test-only")
+
+    cursor.execute("ALTER TABLE users DROP INDEX email")
+
+    with pytest.raises(RuntimeError, match="Invalid unique constraints"):
+        migrate.run_migrations(migration_database, password="test-only")
+
+
+def test_missing_recorded_table_fails(cursor, migration_database):
+    migrate.run_migrations(migration_database, password="test-only")
+
+    cursor.execute("DROP TABLE expenses")
+
+    with pytest.raises(RuntimeError, match="recorded but table"):
+        migrate.run_migrations(migration_database, password="test-only")
 
