@@ -286,10 +286,32 @@ def validate_table(cursor, table):
 
 
 def normalize_check_clause(clause):
-    # Ignore MySQL formatting, but preserve function parentheses.
+    # MySQL may escape the quotes of an empty string in CHECK_CLAUSE.
+    clause = clause.replace("\\'\\'", "''")
+
+    # Ignore MySQL formatting without changing quoted string values.
     clause = clause.lower().replace("`", "")
     clause = clause.replace("_utf8mb4", "").replace("_utf8mb3", "")
-    clause = "".join(clause.split())
+
+    normalized = []
+    in_string = False
+
+    for char in clause:
+        if char == "'":
+            in_string = not in_string
+
+        if char.isspace() and not in_string:
+            continue
+
+        normalized.append(char)
+
+    clause = "".join(normalized)
+
+    # MySQL can spell TRIM(content) as TRIM(BOTH ' ' FROM content).
+    clause = clause.replace("trim(both' 'fromcontent)", "trim(content)")
+
+    # MySQL may add parentheses around an empty string literal.
+    clause = clause.replace("<>('')", "<>''")
 
     # Remove only parentheses enclosing the entire expression.
     while clause.startswith("(") and clause.endswith(")"):
@@ -333,8 +355,14 @@ def validate_business_constraints(cursor, require_all=True):
         if expected is None:
             raise RuntimeError(f"Unexpected CHECK constraint: {table}.{name}")
 
-        if enforced != "YES" or normalize_check_clause(clause) != expected:
-            raise RuntimeError(f"Invalid CHECK constraint: {table}.{name}")
+        actual = normalize_check_clause(clause)
+
+        if enforced != "YES" or actual != expected:
+            raise RuntimeError(
+                f"Invalid CHECK constraint: {table}.{name} "
+                f"(expected={expected!r}, actual={actual!r}, "
+                f"MySQL={clause!r}, enforced={enforced!r})"
+            )
 
         found.add(key)
 
