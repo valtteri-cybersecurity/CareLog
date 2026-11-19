@@ -46,19 +46,40 @@ with pymysql.connect(unix_socket=socket, user="root") as admin, admin.cursor() a
     assert cursor.fetchall() == (("GRANT USAGE ON *.* TO `carelog_app`@`localhost`",),)
     cursor.execute("SHOW GRANTS FOR carelog_migrator@localhost")
     database = os.environ["CARELOG_TEST_DATABASE"]
-    expected_grant = (
-        "GRANT SELECT, INSERT, CREATE, REFERENCES "
-        f"ON `{database}`.* TO `carelog_migrator`@`localhost`"
-    )
-    assert cursor.fetchall() == (
-        ("GRANT USAGE ON *.* TO `carelog_migrator`@`localhost`",),
-        (expected_grant,),
-    )
+    grants = [row[0] for row in cursor.fetchall()]
+    assert len(grants) == 2
+    assert grants[0] == "GRANT USAGE ON *.* TO `carelog_migrator`@`localhost`"
+    privilege_part, scope_part = grants[1].split(" ON ", 1)
+    privileges = set(privilege_part.removeprefix("GRANT ").split(", "))
+    assert privileges == {"SELECT", "INSERT", "CREATE", "REFERENCES", "ALTER"}
+    assert scope_part == f"`{database}`.* TO `carelog_migrator`@`localhost`"
 
 password = sys.stdin.readline().rstrip("\\n")
 assert password
 if os.getenv("CARELOG_TEST_MIGRATION_FAILURE"):
     raise SystemExit("Simulated migration failure")
+
+# Verify that ALTER is usable, not only listed by SHOW GRANTS.
+with pymysql.connect(unix_socket=socket, user="root", database=database, autocommit=True) as admin:
+    with admin.cursor() as cursor:
+        cursor.execute("CREATE TABLE carelog_alter_probe (id INT PRIMARY KEY)")
+        try:
+            with pymysql.connect(
+                unix_socket=socket,
+                user="carelog_migrator",
+                password=password,
+                database=database,
+                autocommit=True,
+            ) as migrator:
+                with migrator.cursor() as migration_cursor:
+                    migration_cursor.execute(
+                        "ALTER TABLE carelog_alter_probe ADD COLUMN marker INT"
+                    )
+            cursor.execute("SHOW COLUMNS FROM carelog_alter_probe LIKE %s", ("marker",))
+            assert cursor.fetchone() is not None
+        finally:
+            cursor.execute("DROP TABLE carelog_alter_probe")
+
 migrate.get_connection = connect
 migrate.run_migrations(password=password)
 '
