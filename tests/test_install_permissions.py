@@ -171,9 +171,7 @@ def test_application_privileges_and_reinstallation(installer_database):
     insert_service(cursor)
     client_id = insert_client(cursor)
 
-    cursor.execute(
-        f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* TO 'carelog_app'@'localhost'"
-    )
+    # Reinstallation must work with the installer's own table-level grants.
     result = install_database(env)
     assert result.returncode == 0, result.stderr
 
@@ -226,14 +224,10 @@ def test_application_privileges_and_reinstallation(installer_database):
 
 def test_failed_installation_restores_app_and_allows_retry(installer_database):
     cursor, env, connect_app = installer_database
-    database = env["CARELOG_TEST_DATABASE"]
 
     result = install_database(env)
     assert result.returncode == 0, result.stderr
 
-    cursor.execute(
-        f"GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* TO 'carelog_app'@'localhost'"
-    )
     env["CARELOG_TEST_MIGRATION_FAILURE"] = "1"
 
     result = install_database(env)
@@ -299,6 +293,84 @@ def test_unexpected_grants_require_manual_review(installer_database, extra_grant
     assert_no_migrator(cursor)
     cursor.execute("SHOW GRANTS FOR 'carelog_app'@'localhost'")
     assert cursor.fetchall() == previous
+
+
+@pytest.mark.parametrize(
+    "extra_grant",
+    [
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON `{database}`.* TO 'carelog_app'@'localhost'",
+        "GRANT SELECT ON `{database}`.* TO 'carelog_app'@'localhost' WITH GRANT OPTION",
+        "GRANT ALL PRIVILEGES ON `{database}`.* TO 'carelog_app'@'localhost' WITH GRANT OPTION",
+        "GRANT SELECT ON `{database}`.`services` TO 'carelog_app'@'localhost' WITH GRANT OPTION",
+        "GRANT INSERT ON `{database}`.`services` TO 'carelog_app'@'localhost'",
+        "GRANT ALTER ON `{database}`.`clients` TO 'carelog_app'@'localhost'",
+        "GRANT SELECT ON `{database}`.`schema_migrations` TO 'carelog_app'@'localhost'",
+        "GRANT SELECT ON `{database}`.`users` TO 'carelog_app'@'localhost'",
+        "GRANT SELECT (password_hash) ON `{database}`.`users` TO 'carelog_app'@'localhost'",
+        "GRANT UPDATE (role) ON `{database}`.`users` TO 'carelog_app'@'localhost'",
+    ],
+)
+def test_excessive_app_privileges_are_rejected_without_changes(installer_database, extra_grant):
+    cursor, env, _ = installer_database
+    database = env["CARELOG_TEST_DATABASE"]
+    result = install_database(env)
+    assert result.returncode == 0, result.stderr
+
+    cursor.execute(extra_grant.format(database=database))
+    cursor.execute("SHOW GRANTS FOR 'carelog_app'@'localhost'")
+    previous = cursor.fetchall()
+
+    result = install_database(env)
+
+    assert result.returncode != 0
+    assert "Manual review required" in result.stderr
+    assert_no_migrator(cursor)
+    cursor.execute("SHOW GRANTS FOR 'carelog_app'@'localhost'")
+    assert cursor.fetchall() == previous
+    cursor.execute(
+        "SELECT account_locked FROM mysql.user WHERE User = 'carelog_app' AND Host = 'localhost'"
+    )
+    assert cursor.fetchone() == ("N",)
+
+
+def test_excessive_privileges_do_not_unlock_locked_account(installer_database):
+    cursor, env, _ = installer_database
+    database = env["CARELOG_TEST_DATABASE"]
+    result = install_database(env)
+    assert result.returncode == 0, result.stderr
+
+    cursor.execute(f"GRANT ALTER ON `{database}`.`clients` TO 'carelog_app'@'localhost'")
+    cursor.execute("ALTER USER 'carelog_app'@'localhost' ACCOUNT LOCK")
+    cursor.execute("SHOW GRANTS FOR 'carelog_app'@'localhost'")
+    previous = cursor.fetchall()
+
+    result = install_database(env)
+
+    assert result.returncode != 0
+    assert "Manual review required" in result.stderr
+    assert_no_migrator(cursor)
+    cursor.execute("SHOW GRANTS FOR 'carelog_app'@'localhost'")
+    assert cursor.fetchall() == previous
+    cursor.execute(
+        "SELECT account_locked FROM mysql.user WHERE User = 'carelog_app' AND Host = 'localhost'"
+    )
+    assert cursor.fetchone() == ("Y",)
+
+
+def test_reinstallation_restores_missing_allowed_privilege(installer_database):
+    cursor, env, connect_app = installer_database
+    database = env["CARELOG_TEST_DATABASE"]
+    result = install_database(env)
+    assert result.returncode == 0, result.stderr
+
+    cursor.execute(f"REVOKE UPDATE ON `{database}`.`clients` FROM 'carelog_app'@'localhost'")
+    result = install_database(env)
+    assert result.returncode == 0, result.stderr
+    assert_no_migrator(cursor)
+
+    with connect_app() as app, app.cursor() as app_cursor:
+        app_cursor.execute("SHOW GRANTS")
+        assert any("UPDATE" in row[0] and "`clients`" in row[0] for row in app_cursor.fetchall())
 
 
 def test_inherited_role_requires_manual_review(installer_database):
