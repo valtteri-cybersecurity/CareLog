@@ -232,7 +232,7 @@ run_migrations() {
     if [ "${#migration_password}" -lt 20 ]; then
         fail "MySQL did not generate a migration password of at least 20 characters"
     fi
-    mysql_admin -e "GRANT SELECT, INSERT, CREATE, REFERENCES ON \`$DB_NAME\`.* TO '$MIGRATION_USER'@'localhost'"
+    mysql_admin -e "GRANT SELECT, INSERT, CREATE, REFERENCES, ALTER ON \`$DB_NAME\`.* TO '$MIGRATION_USER'@'localhost'"
 
     reset_app_permissions
     echo "Running database migrations with the dedicated migration account..."
