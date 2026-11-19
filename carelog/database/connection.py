@@ -1,10 +1,20 @@
+
 from pathlib import Path
 
 from dotenv import dotenv_values
 import pymysql
 
+
 PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
 ENV_FILE = PROJECT_DIR / ".env"
+
+SQL_MODE = (
+    "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,"
+    "NO_ZERO_IN_DATE,NO_ZERO_DATE,"
+    "ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION"
+)
+TIME_ZONE = "+00:00"
+
 
 def load_config():
     if not ENV_FILE.is_file():
@@ -16,7 +26,7 @@ def load_config():
         "CARELOG_HOST",
         "CARELOG_DATABASE",
         "CARELOG_USER",
-        "CARELOG_PASSWORD"
+        "CARELOG_PASSWORD",
     )
 
     for setting in required_settings:
@@ -24,6 +34,19 @@ def load_config():
             raise ValueError(f"Missing required setting: {setting}")
 
     return config
+
+
+def configure_session(connection):
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SET SESSION sql_mode = %s",
+            (SQL_MODE,)
+        )
+        cursor.execute(
+            "SET SESSION time_zone = %s",
+            (TIME_ZONE,)
+        )
+
 
 def get_connection(database=None, user=None, password=None):
     config = load_config()
@@ -46,10 +69,16 @@ def get_connection(database=None, user=None, password=None):
         connect_timeout=10,
     )
 
+    try:
+        configure_session(connection)
+    except Exception:
+        connection.close()
+        raise
+
     return connection
 
-def check_database_connection():
 
+def check_database_connection():
     connection = get_connection()
 
     try:
