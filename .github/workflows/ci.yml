@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - development
+  pull_request:
+    branches:
+      - main
+      - development
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: Python 3.12 / MySQL 8.4
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    # Fresh, disposable database: never connects to a user's own MySQL server.
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: carelog-ci-only-password
+          MYSQL_ROOT_HOST: "%"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pcarelog-ci-only-password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    # Credentials are only for the disposable CI database.
+    env:
+      CARELOG_TEST_MYSQL_HOST: 127.0.0.1
+      CARELOG_TEST_MYSQL_PORT: "3306"
+      CARELOG_TEST_MYSQL_USER: root
+      CARELOG_TEST_MYSQL_PASSWORD: carelog-ci-only-password
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      # Installer-permission tests require a dedicated local root UNIX socket
+      # and change MySQL global settings. Run them separately in an isolated VM.
+      - name: Run pytest
+        run: python -m pytest -v --ignore=tests/test_install_permissions.py -rs
+
