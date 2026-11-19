@@ -161,17 +161,74 @@ check_schema() {
 }
 
 check_app_permissions() {
-    local grants grant account locked
+    local grants grant account permissions permission locked table_grants
+    table_grants=0
     account="\`$DB_USER\`@\`localhost\`"
     grants="$(mysql_admin -N -s -e "SHOW GRANTS FOR '$DB_USER'@'localhost'")"
+
+    # Reject global, database-wide, role and grant-option privileges.
+    # Only the seven application tables may have direct grants.
     while IFS= read -r grant; do
         case "$grant" in
             "GRANT USAGE ON *.* TO $account") ;;
-            "GRANT "*" ON \`$DB_NAME\`."*" TO $account") ;;
-            "GRANT "*" ON \`$DB_NAME\`."*" TO $account WITH GRANT OPTION") ;;
-            *) fail "Application account has global, role or other unexpected grants. Manual review required" ;;
+            "GRANT "*" ON \`$DB_NAME\`.\`users\` TO $account" | \
+            "GRANT "*" ON \`$DB_NAME\`.\`clients\` TO $account" | \
+            "GRANT "*" ON \`$DB_NAME\`.\`services\` TO $account" | \
+            "GRANT "*" ON \`$DB_NAME\`.\`trips\` TO $account" | \
+            "GRANT "*" ON \`$DB_NAME\`.\`visits\` TO $account" | \
+            "GRANT "*" ON \`$DB_NAME\`.\`visit_notes\` TO $account" | \
+            "GRANT "*" ON \`$DB_NAME\`.\`expenses\` TO $account") table_grants=1 ;;
+            *) fail "Application account has unexpected grants. Manual review required" ;;
         esac
     done <<< "$grants"
+
+    # Verify individual privileges, not only the table scope in SHOW GRANTS.
+    # A partial set is valid; grant_app_permissions restores missing rights.
+    permissions="$(mysql_admin -N -s -e "
+SELECT CONCAT_WS('|', 'TABLE', TABLE_SCHEMA, TABLE_NAME, '-', PRIVILEGE_TYPE, IS_GRANTABLE)
+FROM information_schema.TABLE_PRIVILEGES
+WHERE GRANTEE = CONCAT(CHAR(39), '$DB_USER', CHAR(39), '@', CHAR(39), 'localhost', CHAR(39))
+UNION ALL
+SELECT CONCAT_WS('|', 'COLUMN', TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, PRIVILEGE_TYPE, IS_GRANTABLE)
+FROM information_schema.COLUMN_PRIVILEGES
+WHERE GRANTEE = CONCAT(CHAR(39), '$DB_USER', CHAR(39), '@', CHAR(39), 'localhost', CHAR(39))")"
+
+    if [ "$table_grants" -eq 1 ] && [ -z "$permissions" ]; then
+        fail "Cannot verify application table privileges. Manual review required"
+    fi
+
+    while IFS= read -r permission; do
+        if [ -z "$permission" ]; then
+            continue
+        fi
+        case "$permission" in
+            "TABLE|$DB_NAME|clients|-|SELECT|NO" | \
+            "TABLE|$DB_NAME|clients|-|INSERT|NO" | \
+            "TABLE|$DB_NAME|clients|-|UPDATE|NO" | \
+            "TABLE|$DB_NAME|services|-|SELECT|NO" | \
+            "TABLE|$DB_NAME|trips|-|SELECT|NO" | \
+            "TABLE|$DB_NAME|trips|-|INSERT|NO" | \
+            "TABLE|$DB_NAME|trips|-|UPDATE|NO" | \
+            "TABLE|$DB_NAME|trips|-|DELETE|NO" | \
+            "TABLE|$DB_NAME|visits|-|SELECT|NO" | \
+            "TABLE|$DB_NAME|visits|-|INSERT|NO" | \
+            "TABLE|$DB_NAME|visits|-|UPDATE|NO" | \
+            "TABLE|$DB_NAME|visit_notes|-|SELECT|NO" | \
+            "TABLE|$DB_NAME|visit_notes|-|INSERT|NO" | \
+            "TABLE|$DB_NAME|visit_notes|-|UPDATE|NO" | \
+            "TABLE|$DB_NAME|visit_notes|-|DELETE|NO" | \
+            "TABLE|$DB_NAME|expenses|-|SELECT|NO" | \
+            "TABLE|$DB_NAME|expenses|-|INSERT|NO" | \
+            "TABLE|$DB_NAME|expenses|-|UPDATE|NO" | \
+            "TABLE|$DB_NAME|expenses|-|DELETE|NO" | \
+            "COLUMN|$DB_NAME|users|id|SELECT|NO" | \
+            "COLUMN|$DB_NAME|users|email|SELECT|NO" | \
+            "COLUMN|$DB_NAME|users|display_name|SELECT|NO" | \
+            "COLUMN|$DB_NAME|users|role|SELECT|NO" | \
+            "COLUMN|$DB_NAME|users|is_active|SELECT|NO") ;;
+            *) fail "Application account has excessive table or column privileges. Manual review required" ;;
+        esac
+    done <<< "$permissions"
 
     locked="$(mysql_admin -N -s -e "SELECT account_locked FROM mysql.user WHERE User = '$DB_USER' AND Host = 'localhost'")"
     if [ "$locked" != "N" ] && [ "$locked" != "Y" ]; then
