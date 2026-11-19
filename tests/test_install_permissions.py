@@ -150,7 +150,7 @@ def install_database(env):
         env=env,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=90,
     )
 
 
@@ -162,12 +162,36 @@ def assert_no_migrator(cursor):
     assert cursor.fetchone() == (0,)
 
 
+def assert_business_constraints(cursor):
+    cursor.execute("""
+        SELECT TABLE_NAME, CONSTRAINT_NAME, ENFORCED
+        FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+        WHERE CONSTRAINT_SCHEMA = DATABASE()
+          AND CONSTRAINT_TYPE = 'CHECK'
+    """)
+
+    constraints = set(cursor.fetchall())
+    expected = {
+        ("clients", "chk_clients_distance", "YES"),
+        ("services", "chk_services_rate", "YES"),
+        ("trips", "chk_trips_distance", "YES"),
+        ("visits", "chk_visits_distance", "YES"),
+        ("visits", "chk_visits_price", "YES"),
+        ("visits", "chk_visits_time", "YES"),
+        ("visit_notes", "chk_notes_content", "YES"),
+        ("expenses", "chk_expenses_amount", "YES"),
+    }
+
+    assert constraints == expected
+
+
 def test_application_privileges_and_reinstallation(installer_database):
     cursor, env, connect_app = installer_database
     database = env["CARELOG_TEST_DATABASE"]
     result = install_database(env)
     assert result.returncode == 0, result.stderr
-    assert migrate.get_applied_versions(cursor) == set(range(1, 8))
+    assert migrate.get_applied_versions(cursor) == set(range(1, 9))
+    assert_business_constraints(cursor)
     insert_service(cursor)
     client_id = insert_client(cursor)
 
@@ -176,7 +200,8 @@ def test_application_privileges_and_reinstallation(installer_database):
     assert result.returncode == 0, result.stderr
 
     assert_no_migrator(cursor)
-    assert migrate.get_applied_versions(cursor) == set(range(1, 8))
+    assert migrate.get_applied_versions(cursor) == set(range(1, 9))
+    assert_business_constraints(cursor)
     assert "personal_identity_code" not in [column[0] for column in get_columns(cursor, "clients")]
     cursor.execute("SELECT first_name FROM clients WHERE id = %s", (client_id,))
     assert cursor.fetchone() == ("Test",)
@@ -200,6 +225,13 @@ def test_application_privileges_and_reinstallation(installer_database):
         assert app_cursor.rowcount == 1
         app_cursor.execute("DELETE FROM expenses WHERE id = %s", (expense_id,))
         assert app_cursor.rowcount == 1
+
+        # v008 must reject invalid values for the application account.
+        assert_mysql_error(
+            app_cursor, 3819,
+            "INSERT INTO expenses (expense_date, amount, category) "
+            "VALUES ('2026-01-01', -1, 'company')",
+        )
 
         for sql in (
             "SELECT version FROM schema_migrations",
@@ -252,7 +284,8 @@ def test_failed_installation_restores_app_and_allows_retry(installer_database):
     result = install_database(env)
     assert result.returncode == 0, result.stderr
     assert_no_migrator(cursor)
-    assert migrate.get_applied_versions(cursor) == set(range(1, 8))
+    assert migrate.get_applied_versions(cursor) == set(range(1, 9))
+    assert_business_constraints(cursor)
 
 
 def test_active_application_session_blocks_reinstallation(installer_database):

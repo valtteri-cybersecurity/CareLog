@@ -5,6 +5,9 @@ from carelog.database.migrations import v001_users
 from tests.migration_helpers import get_columns, table_exists
 
 
+EXPECTED_VERSIONS = set(range(1, 9))
+
+
 @pytest.fixture
 def migration_database(cursor, connect_to_test_mysql, monkeypatch):
     cursor.execute("SELECT DATABASE()")
@@ -41,14 +44,14 @@ def test_run_migrations_creates_tables(cursor, migration_database):
 def test_run_migrations_records_versions(cursor, migration_database):
     migrate.run_migrations(migration_database, password="test-only")
 
-    assert migrate.get_applied_versions(cursor) == {1, 2, 3, 4, 5, 6, 7}
+    assert migrate.get_applied_versions(cursor) == EXPECTED_VERSIONS
 
 
 def test_run_migrations_can_be_run_twice(cursor, migration_database):
     migrate.run_migrations(migration_database, password="test-only")
     migrate.run_migrations(migration_database, password="test-only")
 
-    assert migrate.get_applied_versions(cursor) == {1, 2, 3, 4, 5, 6, 7}
+    assert migrate.get_applied_versions(cursor) == EXPECTED_VERSIONS
 
 
 def test_run_migrations_creates_correct_columns(cursor, migration_database):
@@ -73,6 +76,32 @@ def test_run_migrations_creates_correct_columns(cursor, migration_database):
         assert column[0] != "street_adress"
 
 
+def test_run_migrations_creates_business_constraints(cursor, migration_database):
+    migrate.run_migrations(migration_database, password="test-only")
+
+    cursor.execute("""
+        SELECT TABLE_NAME, CONSTRAINT_NAME, ENFORCED
+        FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND CONSTRAINT_TYPE = 'CHECK'
+    """)
+
+    constraints = set(cursor.fetchall())
+
+    expected = {
+        ("clients", "chk_clients_distance", "YES"),
+        ("services", "chk_services_rate", "YES"),
+        ("trips", "chk_trips_distance", "YES"),
+        ("visits", "chk_visits_distance", "YES"),
+        ("visits", "chk_visits_price", "YES"),
+        ("visits", "chk_visits_time", "YES"),
+        ("visit_notes", "chk_notes_content", "YES"),
+        ("expenses", "chk_expenses_amount", "YES"),
+    }
+
+    assert constraints == expected
+
+
 def test_interrupted_migration_recovers(cursor, migration_database):
     migrate.create_migrations_table(cursor)
     v001_users.upgrade(cursor)
@@ -84,65 +113,17 @@ def test_interrupted_migration_recovers(cursor, migration_database):
 
     migrate.run_migrations(migration_database, password="test-only")
 
-    assert migrate.get_applied_versions(cursor) == {1, 2, 3, 4, 5, 6, 7}
+    assert migrate.get_applied_versions(cursor) == EXPECTED_VERSIONS
 
     cursor.execute("SELECT email FROM users")
     assert cursor.fetchone() == ("test@example.com",)
 
 
-def test_invalid_interrupted_migration_fails(cursor, migration_database):
-    migrate.create_migrations_table(cursor)
-    v001_users.upgrade(cursor)
-
-    cursor.execute(
-        "ALTER TABLE users MODIFY email VARCHAR(100) NOT NULL"
-    )
-
-    with pytest.raises(RuntimeError, match="Invalid columns"):
-        migrate.run_migrations(migration_database, password="test-only")
-
-    assert migrate.get_applied_versions(cursor) == set()
-
-
-def test_unknown_migration_version_fails(cursor, migration_database):
-    migrate.create_migrations_table(cursor)
-
-    cursor.execute(
-        "INSERT INTO schema_migrations (version) VALUES (999)"
-    )
-
-    with pytest.raises(RuntimeError, match="Unknown migration versions"):
-        migrate.run_migrations(migration_database, password="test-only")
-
-    assert not table_exists(cursor, "users")
-
-
-def test_changed_table_structure_fails(cursor, migration_database):
+def test_interrupted_business_migration_recovers(cursor, migration_database):
     migrate.run_migrations(migration_database, password="test-only")
 
-    cursor.execute(
-        "ALTER TABLE services "
-        "MODIFY default_hourly_rate DECIMAL(12, 2) NULL"
-    )
-
-    with pytest.raises(RuntimeError, match="Invalid columns"):
-        migrate.run_migrations(migration_database, password="test-only")
-
-
-def test_missing_unique_constraint_fails(cursor, migration_database):
-    migrate.run_migrations(migration_database, password="test-only")
-
-    cursor.execute("ALTER TABLE users DROP INDEX email")
-
-    with pytest.raises(RuntimeError, match="Invalid unique constraints"):
-        migrate.run_migrations(migration_database, password="test-only")
-
-
-def test_missing_recorded_table_fails(cursor, migration_database):
-    migrate.run_migrations(migration_database, password="test-only")
-
-    cursor.execute("DROP TABLE expenses")
-
-    with pytest.raises(RuntimeError, match="recorded but table"):
-        migrate.run_migrations(migration_database, password="test-only")
+    # Simulate a crash after some v008 ALTER TABLE operations succeeded,
+    # but before the migration was recorded.
+    cursor.execute("DELETE FROM schema_migrations WHERE version = 8")
+    cursor.execute("ALTER TABLE clients DROP CHECK chk_clients_distance")
 

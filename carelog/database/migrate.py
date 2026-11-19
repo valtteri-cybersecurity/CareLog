@@ -7,6 +7,7 @@ from carelog.database.migrations import (
     v005_visits,
     v006_visit_notes,
     v007_expenses,
+    v008_business_constraints,
 )
 
 
@@ -98,6 +99,20 @@ EXPECTED_FOREIGN_KEYS = {
     "expenses": [
         ("visit_id", "visits", "id", "RESTRICT", "RESTRICT"),
     ],
+}
+
+
+# Expected CHECK constraints added by migration v008.
+# Keep these definitions consistent with v008_business_constraints.py.
+EXPECTED_CHECKS = {
+    ("clients", "chk_clients_distance"): "distance_from_home_km>=0",
+    ("services", "chk_services_rate"): "default_hourly_rate>=0",
+    ("trips", "chk_trips_distance"): "distance_km>=0",
+    ("visits", "chk_visits_distance"): "distance_km>=0",
+    ("visits", "chk_visits_price"): "price>=0",
+    ("visits", "chk_visits_time"): "ended_at>=started_at",
+    ("visit_notes", "chk_notes_content"): "trim(content)<>''",
+    ("expenses", "chk_expenses_amount"): "amount>0",
 }
 
 
@@ -270,6 +285,64 @@ def validate_table(cursor, table):
         raise RuntimeError(f"Invalid foreign keys in table: {table}")
 
 
+def normalize_check_clause(clause):
+    # Ignore MySQL formatting, but preserve function parentheses.
+    clause = clause.lower().replace("`", "")
+    clause = clause.replace("_utf8mb4", "").replace("_utf8mb3", "")
+    clause = "".join(clause.split())
+
+    # Remove only parentheses enclosing the entire expression.
+    while clause.startswith("(") and clause.endswith(")"):
+        depth = 0
+        outer = True
+
+        for index, char in enumerate(clause):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0 and index != len(clause) - 1:
+                    outer = False
+                    break
+
+        if not outer:
+            break
+
+        clause = clause[1:-1]
+
+    return clause
+
+
+def validate_business_constraints(cursor, require_all=True):
+    cursor.execute("""
+        SELECT t.TABLE_NAME, t.CONSTRAINT_NAME, t.ENFORCED, c.CHECK_CLAUSE
+        FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS t
+        JOIN INFORMATION_SCHEMA.CHECK_CONSTRAINTS AS c
+          ON t.CONSTRAINT_SCHEMA = c.CONSTRAINT_SCHEMA
+         AND t.CONSTRAINT_NAME = c.CONSTRAINT_NAME
+        WHERE t.TABLE_SCHEMA = DATABASE()
+          AND t.CONSTRAINT_TYPE = 'CHECK'
+    """)
+
+    found = set()
+
+    for table, name, enforced, clause in cursor.fetchall():
+        key = (table, name)
+        expected = EXPECTED_CHECKS.get(key)
+
+        if expected is None:
+            raise RuntimeError(f"Unexpected CHECK constraint: {table}.{name}")
+
+        if enforced != "YES" or normalize_check_clause(clause) != expected:
+            raise RuntimeError(f"Invalid CHECK constraint: {table}.{name}")
+
+        found.add(key)
+
+    if require_all and found != set(EXPECTED_CHECKS):
+        missing = sorted(set(EXPECTED_CHECKS) - found)
+        raise RuntimeError(f"Missing CHECK constraints: {missing}")
+
+
 def run_migrations(database=None, *, password):
     if not password:
         raise ValueError("A password for carelog_migrator is required")
@@ -296,6 +369,7 @@ def run_migrations(database=None, *, password):
             (5, "visits", v005_visits.upgrade),
             (6, "visit_notes", v006_visit_notes.upgrade),
             (7, "expenses", v007_expenses.upgrade),
+            (8, None, v008_business_constraints.upgrade),
         ]
 
         known_versions = set()
@@ -320,6 +394,9 @@ def run_migrations(database=None, *, password):
         existing_tables = set()
 
         for version, table, upgrade in migrations:
+            if table is None:
+                continue
+
             if table_exists(cursor, table):
                 validate_table(cursor, table)
                 existing_tables.add(table)
@@ -329,11 +406,20 @@ def run_migrations(database=None, *, password):
                     f"Migration {version} is recorded but table {table} is missing"
                 )
 
+        # Check existing constraints before attempting a partly applied v008.
+        validate_business_constraints(
+            cursor,
+            require_all=8 in applied_versions,
+        )
+
         for version, table, upgrade in migrations:
             if version in applied_versions:
                 continue
 
-            if table not in existing_tables:
+            if table is None:
+                upgrade(cursor)
+                validate_business_constraints(cursor)
+            elif table not in existing_tables:
                 upgrade(cursor)
                 validate_table(cursor, table)
 
