@@ -335,7 +335,7 @@ def test_unexpected_grants_require_manual_review(installer_database, extra_grant
         "GRANT SELECT ON `{database}`.* TO 'carelog_app'@'localhost' WITH GRANT OPTION",
         "GRANT ALL PRIVILEGES ON `{database}`.* TO 'carelog_app'@'localhost' WITH GRANT OPTION",
         "GRANT SELECT ON `{database}`.`services` TO 'carelog_app'@'localhost' WITH GRANT OPTION",
-        "GRANT INSERT ON `{database}`.`services` TO 'carelog_app'@'localhost'",
+        "GRANT DELETE ON `{database}`.`services` TO 'carelog_app'@'localhost'",
         "GRANT ALTER ON `{database}`.`clients` TO 'carelog_app'@'localhost'",
         "GRANT SELECT ON `{database}`.`schema_migrations` TO 'carelog_app'@'localhost'",
         "GRANT SELECT ON `{database}`.`users` TO 'carelog_app'@'localhost'",
