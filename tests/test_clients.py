@@ -1,6 +1,6 @@
 import pytest
 
-from carelog.services.clients import add_client
+from carelog.services.clients import add_client, get_client, get_clients, update_client, archive_client
 
 
 def test_add_client_rejects_empty_first_name():
@@ -847,3 +847,754 @@ def test_add_client_saves_null_distance(
 
     assert cursor.fetchone()[0] is None
 
+
+# GET CLIENT TESTS
+
+
+def test_get_client_rejects_invalid_id_type():
+    with pytest.raises(ValueError):
+        get_client("123")
+
+
+def test_get_client_rejects_none_id():
+    with pytest.raises(ValueError):
+        get_client(None)
+
+
+def test_get_client_rejects_boolean_id():
+    with pytest.raises(ValueError):
+        get_client(True)
+
+
+def test_get_client_rejects_zero_id():
+    with pytest.raises(ValueError):
+        get_client(0)
+
+
+def test_get_client_rejects_negative_id():
+    with pytest.raises(ValueError):
+        get_client(-1)
+
+
+def test_get_client_returns_client(
+    cursor_with_clients,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO clients (first_name, last_name, city)
+        VALUES (%s, %s, %s)
+        """,
+        ("Hilma", "Virtanen", "Tampere")
+    )
+
+    client_id = cursor.lastrowid
+
+    client = get_client(client_id)
+
+    assert isinstance(client, dict)
+    assert client["id"] == client_id
+    assert client["first_name"] == "Hilma"
+    assert client["last_name"] == "Virtanen"
+    assert client["city"] == "Tampere"
+
+
+def test_get_client_returns_none_if_not_found(
+    cursor_with_clients,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_connection",
+        get_test_connection
+    )
+
+    client = get_client(999999)
+
+    assert client is None
+
+
+def test_get_client_closes_connection_on_error(
+    cursor_with_clients,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    connections = []
+
+    def get_test_connection():
+        connection = connect_to_test_mysql(database=database)
+        connections.append(connection)
+        return connection
+
+    def select_then_fail(cursor, client_id):
+        raise RuntimeError("Simulated select failure")
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.clients.select_client",
+        select_then_fail
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated select failure"):
+        get_client(1)
+
+    assert connections[0].open is False
+
+
+def test_get_clients_returns_empty_list(
+    cursor_with_clients,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_connection",
+        get_test_connection
+    )
+
+    clients = get_clients()
+
+    assert clients == []
+
+
+def test_get_clients_returns_clients_in_name_order(
+    cursor_with_clients,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO clients (first_name, last_name)
+        VALUES (%s, %s), (%s, %s)
+        """,
+        ("Hilma", "Virtanen", "Aino", "Aalto")
+    )
+
+    clients = get_clients()
+
+    assert isinstance(clients, list)
+    assert len(clients) == 2
+    assert isinstance(clients[0], dict)
+    assert clients[0]["first_name"] == "Aino"
+    assert clients[0]["last_name"] == "Aalto"
+    assert clients[1]["first_name"] == "Hilma"
+    assert clients[1]["last_name"] == "Virtanen"
+
+
+def test_get_clients_excludes_archived_clients(
+    cursor_with_clients,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO clients (first_name, last_name)
+        VALUES (%s, %s)
+        """,
+        ("Hilma", "Virtanen")
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO clients (first_name, last_name, archived_at)
+        VALUES (%s, %s, NOW())
+        """,
+        ("Aino", "Aalto")
+    )
+
+    clients = get_clients()
+
+    assert len(clients) == 1
+    assert clients[0]["first_name"] == "Hilma"
+
+
+def test_get_clients_closes_connection_on_error(monkeypatch):
+    class FakeCursor:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeConnection:
+        def __init__(self):
+            self.test_cursor = FakeCursor()
+            self.closed = False
+
+        def cursor(self):
+            return self.test_cursor
+
+        def close(self):
+            self.closed = True
+
+    connection = FakeConnection()
+
+    def get_test_connection():
+        return connection
+
+    def select_then_fail(cursor):
+        raise RuntimeError("Simulated select failure")
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.clients.select_clients",
+        select_then_fail
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated select failure"):
+        get_clients()
+
+    assert connection.test_cursor.closed is True
+    assert connection.closed is True
+
+
+
+# UPDATE CLIENT TESTS
+
+
+def test_update_client_rejects_invalid_id():
+    with pytest.raises(ValueError):
+        update_client("123", {"city": "Tampere"})
+
+
+def test_update_client_rejects_zero_id():
+    with pytest.raises(ValueError):
+        update_client(0, {"city": "Tampere"})
+
+
+def test_update_client_rejects_boolean_id():
+    with pytest.raises(ValueError):
+        update_client(True, {"city": "Tampere"})
+
+
+def test_update_client_rejects_empty_changes():
+    with pytest.raises(ValueError):
+        update_client(1, {})
+
+
+def test_update_client_rejects_invalid_field():
+    with pytest.raises(ValueError):
+        update_client(1, {"password_hash": "test"})
+
+
+def test_update_client_rejects_empty_name():
+    with pytest.raises(ValueError):
+        update_client(1, {"first_name": "   "})
+
+
+def test_update_client_rejects_invalid_distance():
+    with pytest.raises(ValueError):
+        update_client(1, {"distance_from_home_km": -5})
+
+
+def test_update_client_changes_city(
+    cursor_with_clients,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO clients (first_name, last_name, city)
+        VALUES (%s, %s, %s)
+        """,
+        ("Hilma", "Virtanen", "Tampere")
+    )
+
+    client_id = cursor.lastrowid
+
+    updated = update_client(
+        client_id,
+        {"city": "  Helsinki  "}
+    )
+
+    assert updated is True
+
+    cursor.execute(
+        """
+        SELECT first_name, last_name, city
+        FROM clients
+        WHERE id = %s
+        """,
+        (client_id,)
+    )
+
+    assert cursor.fetchone() == (
+        "Hilma",
+        "Virtanen",
+        "Helsinki"
+    )
+
+
+def test_update_client_clears_phone(
+    cursor_with_clients,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO clients (first_name, last_name, phone)
+        VALUES (%s, %s, %s)
+        """,
+        ("Hilma", "Virtanen", "0401234567")
+    )
+
+    client_id = cursor.lastrowid
+
+    updated = update_client(
+        client_id,
+        {"phone": None}
+    )
+
+    assert updated is True
+
+    cursor.execute(
+        """
+        SELECT phone
+        FROM clients
+        WHERE id = %s
+        """,
+        (client_id,)
+    )
+
+    assert cursor.fetchone()[0] is None
+
+
+def test_update_client_returns_false_if_not_found(
+    cursor_with_clients,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_connection",
+        get_test_connection
+    )
+
+    updated = update_client(
+        999999,
+        {"city": "Tampere"}
+    )
+
+    assert updated is False
+
+
+def test_update_client_rejects_archived_client(
+    cursor_with_clients,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO clients (
+            first_name,
+            last_name,
+            archived_at
+        )
+        VALUES (%s, %s, NOW())
+        """,
+        ("Hilma", "Virtanen")
+    )
+
+    client_id = cursor.lastrowid
+
+    updated = update_client(
+        client_id,
+        {"city": "Tampere"}
+    )
+
+    assert updated is False
+
+
+def test_update_client_rolls_back_on_error(
+    cursor_with_clients,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    def update_then_fail(cursor, client_id, changes):
+        cursor.execute(
+            """
+            UPDATE clients
+            SET city = %s
+            WHERE id = %s
+            """,
+            ("Helsinki", client_id)
+        )
+
+        raise RuntimeError("Simulated update failure")
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.clients.update_client_record",
+        update_then_fail
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO clients (first_name, last_name, city)
+        VALUES (%s, %s, %s)
+        """,
+        ("Hilma", "Virtanen", "Tampere")
+    )
+
+    client_id = cursor.lastrowid
+
+    with pytest.raises(RuntimeError, match="Simulated update failure"):
+        update_client(client_id, {"city": "Helsinki"})
+
+    cursor.execute(
+        """
+        SELECT city
+        FROM clients
+        WHERE id = %s
+        """,
+        (client_id,)
+    )
+
+    assert cursor.fetchone()[0] == "Tampere"
+
+
+# ARCHIVE CLIENT TESTS
+
+
+def test_archive_client_rejects_invalid_id_type():
+    with pytest.raises(ValueError):
+        archive_client("123")
+
+
+def test_archive_client_rejects_none_id():
+    with pytest.raises(ValueError):
+        archive_client(None)
+
+
+def test_archive_client_rejects_boolean_id():
+    with pytest.raises(ValueError):
+        archive_client(True)
+
+
+def test_archive_client_rejects_zero_id():
+    with pytest.raises(ValueError):
+        archive_client(0)
+
+
+def test_archive_client_rejects_negative_id():
+    with pytest.raises(ValueError):
+        archive_client(-1)
+
+
+def test_archive_client_sets_archived_at(
+    cursor_with_clients,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO clients (first_name, last_name)
+        VALUES (%s, %s)
+        """,
+        ("Hilma", "Virtanen")
+    )
+
+    client_id = cursor.lastrowid
+
+    archived = archive_client(client_id)
+
+    assert archived is True
+
+    cursor.execute(
+        """
+        SELECT first_name, last_name, archived_at
+        FROM clients
+        WHERE id = %s
+        """,
+        (client_id,)
+    )
+
+    result = cursor.fetchone()
+
+    assert result[0] == "Hilma"
+    assert result[1] == "Virtanen"
+    assert result[2] is not None
+
+
+def test_archive_client_returns_false_if_not_found(
+    cursor_with_clients,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_connection",
+        get_test_connection
+    )
+
+    archived = archive_client(999999)
+
+    assert archived is False
+
+
+def test_archive_client_returns_false_if_already_archived(
+    cursor_with_clients,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO clients (first_name, last_name)
+        VALUES (%s, %s)
+        """,
+        ("Hilma", "Virtanen")
+    )
+
+    client_id = cursor.lastrowid
+
+    first_result = archive_client(client_id)
+
+    cursor.execute(
+        """
+        SELECT archived_at
+        FROM clients
+        WHERE id = %s
+        """,
+        (client_id,)
+    )
+
+    original_time = cursor.fetchone()[0]
+
+    second_result = archive_client(client_id)
+
+    cursor.execute(
+        """
+        SELECT archived_at
+        FROM clients
+        WHERE id = %s
+        """,
+        (client_id,)
+    )
+
+    final_time = cursor.fetchone()[0]
+
+    assert first_result is True
+    assert second_result is False
+    assert final_time == original_time
+
+
+def test_archive_client_rolls_back_on_error(
+    cursor_with_clients,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    def archive_then_fail(cursor, client_id):
+        cursor.execute(
+            """
+            UPDATE clients
+            SET archived_at = UTC_TIMESTAMP()
+            WHERE id = %s
+            """,
+            (client_id,)
+        )
+
+        raise RuntimeError("Simulated archive failure")
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.clients.archive_client_record",
+        archive_then_fail
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO clients (first_name, last_name)
+        VALUES (%s, %s)
+        """,
+        ("Hilma", "Virtanen")
+    )
+
+    client_id = cursor.lastrowid
+
+    with pytest.raises(
+        RuntimeError,
+        match="Simulated archive failure"
+    ):
+        archive_client(client_id)
+
+    cursor.execute(
+        """
+        SELECT archived_at
+        FROM clients
+        WHERE id = %s
+        """,
+        (client_id,)
+    )
+
+    assert cursor.fetchone()[0] is None

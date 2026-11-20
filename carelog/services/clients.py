@@ -1,7 +1,15 @@
 from math import isfinite
 
+from carelog.database.repositories.update_client import (
+    ALLOWED_FIELDS,
+    update_client_record,
+)
 from carelog.database.connection import get_connection
 from carelog.database.repositories.insert_client import insert_client
+from carelog.database.repositories.select_client import select_client
+from carelog.database.repositories.select_clients import select_clients
+from carelog.database.repositories.archive_client import archive_client_record
+
 
 def add_client(
         first_name: str,
@@ -170,5 +178,232 @@ def add_client(
     finally:
         if cursor is not None:
             cursor.close()
+        if connection is not None:
+            connection.close()
+
+
+
+from pymysql.cursors import Cursor
+
+
+
+def get_client(client_id: int) -> dict | None:
+
+    # Client ID validation
+
+    if type(client_id) is not int:
+        raise ValueError("Client ID must be an integer")
+
+    if client_id <= 0:
+        raise ValueError("Client ID must be positive")
+
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_connection()
+        cursor = connection.cursor()
+
+        client = select_client(cursor, client_id)
+
+        return client
+
+    finally:
+        if cursor is not None:
+            cursor.close()
+
+        if connection is not None:
+            connection.close()
+
+
+def get_clients() -> list[dict]:
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_connection()
+        cursor = connection.cursor()
+
+        clients = select_clients(cursor)
+
+        return clients
+
+    finally:
+        if cursor is not None:
+            cursor.close()
+
+        if connection is not None:
+            connection.close()
+
+
+
+def update_client(client_id: int, changes: dict) -> bool:
+
+    # Client ID validation
+
+    if type(client_id) is not int:
+        raise ValueError("Client ID must be an integer")
+
+    if client_id <= 0:
+        raise ValueError("Client ID must be positive")
+
+    # Changes validation
+
+    if not isinstance(changes, dict):
+        raise ValueError("Changes must be a dictionary")
+
+    if not changes:
+        raise ValueError("No fields to update")
+
+    validated_changes = {}
+
+    for field, value in changes.items():
+
+        if field not in ALLOWED_FIELDS:
+            raise ValueError("Invalid client field")
+
+        # Distance validation
+
+        if field == "distance_from_home_km":
+
+            if value is not None:
+                if isinstance(value, bool):
+                    raise ValueError("Invalid distance type")
+
+                if not isinstance(value, (int, float)):
+                    raise ValueError("Invalid distance type")
+
+                if not isfinite(value):
+                    raise ValueError("Distance must be finite")
+
+                if value <= 0:
+                    raise ValueError("Distance must be positive")
+
+                if value > 99999999.99:
+                    raise ValueError("Distance exceeds limit")
+
+            validated_changes[field] = value
+            continue
+
+        # Required fields
+
+        if field == "first_name" or field == "last_name":
+
+            if not isinstance(value, str):
+                raise ValueError("Name must be a string")
+
+            value = value.strip()
+
+            if not value:
+                raise ValueError("Name cannot be empty")
+
+        # Optional fields
+
+        else:
+            if value is None or value == "":
+                validated_changes[field] = None
+                continue
+
+            if not isinstance(value, str):
+                raise ValueError("Field must be a string")
+
+            value = value.strip()
+
+            if not value:
+                raise ValueError("Field cannot be spaces")
+
+        # Length validation
+
+        if len(value) > ALLOWED_FIELDS[field]:
+            raise ValueError("Field exceeds maximum length")
+
+        # Email validation
+
+        if field == "email":
+
+            if value.count("@") != 1:
+                raise ValueError("Invalid email address")
+
+            local, domain = value.split("@")
+
+            if not local or not domain:
+                raise ValueError("Invalid email address")
+
+            for character in value:
+                if character.isspace():
+                    raise ValueError("Email cannot contain whitespace")
+
+        validated_changes[field] = value
+
+    # Database operation
+
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_connection()
+        cursor = connection.cursor()
+
+        updated = update_client_record(
+            cursor,
+            client_id,
+            validated_changes
+        )
+
+        connection.commit()
+
+        return updated
+
+    except Exception:
+        if connection is not None:
+            connection.rollback()
+        raise
+
+    finally:
+        if cursor is not None:
+            cursor.close()
+
+        if connection is not None:
+            connection.close()
+
+
+
+def archive_client(client_id: int) -> bool:
+
+    # Client ID validation
+
+    if type(client_id) is not int:
+        raise ValueError("Client ID must be an integer")
+
+    if client_id <= 0:
+        raise ValueError("Client ID must be positive")
+
+    # Database operation
+
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_connection()
+        cursor = connection.cursor()
+
+        archived = archive_client_record(
+            cursor,
+            client_id
+        )
+
+        connection.commit()
+
+        return archived
+
+    except Exception:
+        if connection is not None:
+            connection.rollback()
+        raise
+
+    finally:
+        if cursor is not None:
+            cursor.close()
+
         if connection is not None:
             connection.close()
