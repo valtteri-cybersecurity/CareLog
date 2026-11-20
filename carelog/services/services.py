@@ -3,6 +3,7 @@ from decimal import Decimal
 from carelog.database.connection import get_connection
 from carelog.database.repositories.insert_service import insert_service
 from carelog.database.repositories.select_service import select_service
+from carelog.database.repositories.select_services import select_services
 
 
 def add_service(
@@ -118,6 +119,28 @@ def get_service(service_id: int) -> dict | None:
         service = select_service(cursor, service_id)
 
         return service
+
+    finally:
+        if cursor is not None:
+            cursor.close()
+
+        if connection is not None:
+            connection.close()
+
+
+
+def get_services() -> list[dict]:
+
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_connection()
+        cursor = connection.cursor()
+
+        services = select_services(cursor)
+
+        return services
 
     finally:
         if cursor is not None:

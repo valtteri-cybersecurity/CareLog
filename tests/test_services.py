@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from carelog.services.services import add_service, get_service
+from carelog.services.services import add_service, get_service, get_services
 
 
 def test_add_service_rejects_empty_name():
@@ -320,6 +320,148 @@ def test_get_service_closes_connection_on_error(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Simulated select failure"):
         get_service(1)
+
+    assert connection.test_cursor.closed is True
+    assert connection.closed is True
+
+
+
+# GET SERVICES TESTS
+
+
+def test_get_services_returns_empty_list(
+    cursor_with_clients_and_services,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients_and_services
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.services.get_connection",
+        get_test_connection
+    )
+
+    services = get_services()
+
+    assert services == []
+
+
+def test_get_services_returns_sorted_services(
+    cursor_with_clients_and_services,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients_and_services
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.services.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO services (
+            name,
+            description,
+            default_hourly_rate
+        )
+        VALUES (%s, %s, %s)
+        """,
+        ("Ulkoilu", None, None)
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO services (
+            name,
+            description,
+            default_hourly_rate
+        )
+        VALUES (%s, %s, %s)
+        """,
+        ("Apteekkiasiointi", "Lääkkeiden nouto", Decimal("35.00"))
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO services (
+            name,
+            description,
+            default_hourly_rate
+        )
+        VALUES (%s, %s, %s)
+        """,
+        ("Kaupassa käynti", "Asiointiapu", Decimal("40.00"))
+    )
+
+    services = get_services()
+
+    assert len(services) == 3
+
+    assert services[0]["name"] == "Apteekkiasiointi"
+    assert services[1]["name"] == "Kaupassa käynti"
+    assert services[2]["name"] == "Ulkoilu"
+
+    assert isinstance(services[0]["id"], int)
+    assert services[0]["description"] == "Lääkkeiden nouto"
+    assert services[0]["default_hourly_rate"] == Decimal("35.00")
+
+    assert services[2]["description"] is None
+    assert services[2]["default_hourly_rate"] is None
+
+
+def test_get_services_closes_connection_on_error(monkeypatch):
+
+    class FakeCursor:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeConnection:
+        def __init__(self):
+            self.test_cursor = FakeCursor()
+            self.closed = False
+
+        def cursor(self):
+            return self.test_cursor
+
+        def close(self):
+            self.closed = True
+
+    connection = FakeConnection()
+
+    def get_test_connection():
+        return connection
+
+    def select_then_fail(cursor):
+        raise RuntimeError("Simulated select failure")
+
+    monkeypatch.setattr(
+        "carelog.services.services.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.services.select_services",
+        select_then_fail
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated select failure"):
+        get_services()
 
     assert connection.test_cursor.closed is True
     assert connection.closed is True
