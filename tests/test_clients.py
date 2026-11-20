@@ -1598,3 +1598,36 @@ def test_archive_client_rolls_back_on_error(
     )
 
     assert cursor.fetchone()[0] is None
+
+
+
+def test_add_client_rejects_invalid_postal_code():
+    with pytest.raises(
+        ValueError,
+        match="Postal code must contain only digits"
+    ):
+        add_client("Hilma", "Virtanen", postal_code="ABC")
+
+
+def test_update_client_rejects_invalid_postal_code():
+    with pytest.raises(
+        ValueError,
+        match="Postal code must contain only digits"
+    ):
+        update_client(1, {"postal_code": "ABC"})
+
+
+def test_update_client_rejects_unicode_postal_code():
+    with pytest.raises(
+        ValueError,
+        match="Postal code must contain only digits"
+    ):
+        update_client(1, {"postal_code": "１２３４５"})
+
+
+def test_update_client_rejects_spaces_postal_code():
+    with pytest.raises(
+        ValueError,
+        match="Postal code cannot be spaces"
+    ):
+        update_client(1, {"postal_code": "   "})
