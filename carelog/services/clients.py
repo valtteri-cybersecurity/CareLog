@@ -11,6 +11,27 @@ from carelog.database.repositories.select_clients import select_clients
 from carelog.database.repositories.archive_client import archive_client_record
 
 
+def validate_postal_code(postal_code: str | None) -> str | None:
+    if not isinstance(postal_code, str) and postal_code is not None:
+        raise ValueError("Postal code must be a string")
+
+    if not postal_code:
+        return None
+
+    postal_code = postal_code.strip()
+
+    if not postal_code:
+        raise ValueError("Postal code cannot be spaces")
+
+    if len(postal_code) > 20:
+        raise ValueError("Postal code cannot exceed 20 characters")
+
+    if not postal_code.isascii() or not postal_code.isdigit():
+        raise ValueError("Postal code must contain only digits")
+
+    return postal_code
+
+
 def add_client(
         first_name: str,
         last_name: str,
@@ -104,23 +125,7 @@ def add_client(
     
     # Postal code validation
 
-    if not isinstance(postal_code, str) and postal_code is not None:
-        raise ValueError("Postal code must be a string")
-
-    if not postal_code:
-        postal_code = None
-
-    else:
-        postal_code = postal_code.strip()
-
-        if not postal_code:
-            raise ValueError("Postal code cannot be spaces")
-
-        if len(postal_code) > 20:
-            raise ValueError("Postal code cannot exceed 20 characters")
-
-        if not postal_code.isascii() or not postal_code.isdigit():
-            raise ValueError("Postal code must contain only digits")
+    postal_code = validate_postal_code(postal_code)
 
 
     # City validation
@@ -283,6 +288,12 @@ def update_client(client_id: int, changes: dict) -> bool:
                     raise ValueError("Distance exceeds limit")
 
             validated_changes[field] = value
+            continue
+
+        # Postal code validation
+
+        if field == "postal_code":
+            validated_changes[field] = validate_postal_code(value)
             continue
 
         # Required fields
