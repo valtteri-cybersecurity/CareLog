@@ -206,6 +206,7 @@ WHERE GRANTEE = CONCAT(CHAR(39), '$DB_USER', CHAR(39), '@', CHAR(39), 'localhost
             "TABLE|$DB_NAME|clients|-|INSERT|NO" | \
             "TABLE|$DB_NAME|clients|-|UPDATE|NO" | \
             "TABLE|$DB_NAME|services|-|SELECT|NO" | \
+            "TABLE|$DB_NAME|services|-|INSERT|NO" | \
             "TABLE|$DB_NAME|trips|-|SELECT|NO" | \
             "TABLE|$DB_NAME|trips|-|INSERT|NO" | \
             "TABLE|$DB_NAME|trips|-|UPDATE|NO" | \
@@ -257,7 +258,7 @@ grant_app_permissions() {
     mysql_admin <<SQL
 GRANT SELECT (id, email, display_name, role, is_active) ON \`$DB_NAME\`.users TO '$DB_USER'@'localhost';
 GRANT SELECT, INSERT, UPDATE ON \`$DB_NAME\`.clients TO '$DB_USER'@'localhost';
-GRANT SELECT ON \`$DB_NAME\`.services TO '$DB_USER'@'localhost';
+GRANT SELECT, INSERT ON \`$DB_NAME\`.services TO '$DB_USER'@'localhost';
 GRANT SELECT, INSERT, UPDATE, DELETE ON \`$DB_NAME\`.trips TO '$DB_USER'@'localhost';
 GRANT SELECT, INSERT, UPDATE ON \`$DB_NAME\`.visits TO '$DB_USER'@'localhost';
 GRANT SELECT, INSERT, UPDATE, DELETE ON \`$DB_NAME\`.visit_notes TO '$DB_USER'@'localhost';
