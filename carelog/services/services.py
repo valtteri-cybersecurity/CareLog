@@ -2,6 +2,8 @@ from decimal import Decimal
 
 from carelog.database.connection import get_connection
 from carelog.database.repositories.insert_service import insert_service
+from carelog.database.repositories.select_service import select_service
+from carelog.database.repositories.select_services import select_services
 
 
 def add_service(
@@ -86,6 +88,59 @@ def add_service(
         if connection is not None:
             connection.rollback()
         raise
+
+    finally:
+        if cursor is not None:
+            cursor.close()
+
+        if connection is not None:
+            connection.close()
+
+
+def get_service(service_id: int) -> dict | None:
+
+    # Service ID validation
+
+    if type(service_id) is not int:
+        raise ValueError("Service ID must be an integer")
+
+    if service_id <= 0:
+        raise ValueError("Service ID must be positive")
+
+    # Database operation
+
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_connection()
+        cursor = connection.cursor()
+
+        service = select_service(cursor, service_id)
+
+        return service
+
+    finally:
+        if cursor is not None:
+            cursor.close()
+
+        if connection is not None:
+            connection.close()
+
+
+
+def get_services() -> list[dict]:
+
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_connection()
+        cursor = connection.cursor()
+
+        services = select_services(cursor)
+
+        return services
 
     finally:
         if cursor is not None:
