@@ -183,6 +183,8 @@ def assert_business_constraints(cursor):
         ("visits", "chk_visits_duration", "YES"),
         ("visits", "chk_visits_priority", "YES"),
         ("visits", "chk_visits_status", "YES"),
+        ("visit_trip_legs", "chk_trip_legs_position", "YES"),
+        ("visit_trip_legs", "chk_trip_legs_distance", "YES"),
         ("visit_notes", "chk_notes_content", "YES"),
         ("expenses", "chk_expenses_amount", "YES"),
     }
@@ -195,7 +197,7 @@ def test_application_privileges_and_reinstallation(installer_database):
     database = env["CARELOG_TEST_DATABASE"]
     result = install_database(env)
     assert result.returncode == 0, result.stderr
-    assert migrate.get_applied_versions(cursor) == set(range(1, 11))
+    assert migrate.get_applied_versions(cursor) == set(range(1, 12))
     assert_business_constraints(cursor)
     insert_service(cursor)
     client_id = insert_client(cursor)
@@ -205,7 +207,7 @@ def test_application_privileges_and_reinstallation(installer_database):
     assert result.returncode == 0, result.stderr
 
     assert_no_migrator(cursor)
-    assert migrate.get_applied_versions(cursor) == set(range(1, 11))
+    assert migrate.get_applied_versions(cursor) == set(range(1, 12))
     assert_business_constraints(cursor)
     assert "personal_identity_code" not in [column[0] for column in get_columns(cursor, "clients")]
     cursor.execute("SELECT first_name FROM clients WHERE id = %s", (client_id,))
@@ -304,6 +306,7 @@ def test_app_privileges_match_permission_matrix(installer_database):
         "visits": ["SELECT", "INSERT", "UPDATE"],
         "visit_notes": ["SELECT", "INSERT", "UPDATE", "DELETE"],
         "expenses": ["SELECT", "INSERT", "UPDATE", "DELETE"],
+        "visit_trip_legs": ["SELECT", "INSERT", "DELETE"],
     }
     for table, privileges in permission_matrix.items():
         for privilege in privileges:
@@ -345,7 +348,7 @@ def test_installation_creates_missing_database(installer_database):
     assert cursor.fetchone() == ("utf8mb4",)
 
     cursor.execute(f"USE `{database}`")
-    assert migrate.get_applied_versions(cursor) == set(range(1, 11))
+    assert migrate.get_applied_versions(cursor) == set(range(1, 12))
 
 
 def test_failed_installation_restores_app_and_allows_retry(installer_database):
@@ -378,7 +381,7 @@ def test_failed_installation_restores_app_and_allows_retry(installer_database):
     result = install_database(env)
     assert result.returncode == 0, result.stderr
     assert_no_migrator(cursor)
-    assert migrate.get_applied_versions(cursor) == set(range(1, 11))
+    assert migrate.get_applied_versions(cursor) == set(range(1, 12))
     assert_business_constraints(cursor)
 
 

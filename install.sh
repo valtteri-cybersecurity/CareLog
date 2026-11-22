@@ -178,7 +178,7 @@ check_app_permissions() {
     grants="$(mysql_admin -N -s -e "SHOW GRANTS FOR '$DB_USER'@'localhost'")"
 
     # Reject global, database-wide, role and grant-option privileges.
-    # Only the seven application tables may have direct grants.
+    # Only the eight application tables may have direct grants.
     while IFS= read -r grant; do
         case "$grant" in
             "GRANT USAGE ON *.* TO $account") ;;
@@ -188,7 +188,8 @@ check_app_permissions() {
             "GRANT "*" ON \`$DB_NAME\`.\`trips\` TO $account" | \
             "GRANT "*" ON \`$DB_NAME\`.\`visits\` TO $account" | \
             "GRANT "*" ON \`$DB_NAME\`.\`visit_notes\` TO $account" | \
-            "GRANT "*" ON \`$DB_NAME\`.\`expenses\` TO $account") table_grants=1 ;;
+            "GRANT "*" ON \`$DB_NAME\`.\`expenses\` TO $account" | \
+            "GRANT "*" ON \`$DB_NAME\`.\`visit_trip_legs\` TO $account") table_grants=1 ;;
             *) fail "Application account has unexpected grant: $grant. Manual review required" ;;
         esac
     done <<< "$grants"
@@ -234,6 +235,9 @@ WHERE GRANTEE = CONCAT(CHAR(39), '$DB_USER', CHAR(39), '@', CHAR(39), 'localhost
             "TABLE|$DB_NAME|expenses|-|INSERT|NO" | \
             "TABLE|$DB_NAME|expenses|-|UPDATE|NO" | \
             "TABLE|$DB_NAME|expenses|-|DELETE|NO" | \
+            "TABLE|$DB_NAME|visit_trip_legs|-|SELECT|NO" | \
+            "TABLE|$DB_NAME|visit_trip_legs|-|INSERT|NO" | \
+            "TABLE|$DB_NAME|visit_trip_legs|-|DELETE|NO" | \
             "COLUMN|$DB_NAME|users|id|SELECT|NO" | \
             "COLUMN|$DB_NAME|users|email|SELECT|NO" | \
             "COLUMN|$DB_NAME|users|display_name|SELECT|NO" | \
@@ -275,6 +279,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON \`$DB_NAME\`.trips TO '$DB_USER'@'localh
 GRANT SELECT, INSERT, UPDATE ON \`$DB_NAME\`.visits TO '$DB_USER'@'localhost';
 GRANT SELECT, INSERT, UPDATE, DELETE ON \`$DB_NAME\`.visit_notes TO '$DB_USER'@'localhost';
 GRANT SELECT, INSERT, UPDATE, DELETE ON \`$DB_NAME\`.expenses TO '$DB_USER'@'localhost';
+GRANT SELECT, INSERT, DELETE ON \`$DB_NAME\`.visit_trip_legs TO '$DB_USER'@'localhost';
 ALTER USER '$DB_USER'@'localhost' ACCOUNT UNLOCK;
 SQL
     APP_PERMISSIONS_RESET=0

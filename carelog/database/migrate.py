@@ -10,6 +10,7 @@ from carelog.database.migrations import (
     v008_business_constraints,
     v009_visit_scheduling,
     v010_visit_constraints,
+    v011_visit_trip_legs,
 )
 
 
@@ -83,6 +84,14 @@ EXPECTED_COLUMNS = {
         ("category", "varchar(20)", "NO", None),
         ("description", "varchar(255)", "YES", None),
     ],
+    "visit_trip_legs": [
+        ("id", "int", "NO", None),
+        ("visit_id", "int", "NO", None),
+        ("position", "int", "NO", None),
+        ("start_location", "varchar(255)", "NO", None),
+        ("destination", "varchar(255)", "NO", None),
+        ("distance_km", "decimal(10,2)", "YES", None),
+    ],
 }
 
 
@@ -99,6 +108,9 @@ EXPECTED_FOREIGN_KEYS = {
         ("visit_id", "visits", "id", "RESTRICT", "RESTRICT"),
     ],
     "expenses": [
+        ("visit_id", "visits", "id", "RESTRICT", "RESTRICT"),
+    ],
+    "visit_trip_legs": [
         ("visit_id", "visits", "id", "RESTRICT", "RESTRICT"),
     ],
 }
@@ -135,6 +147,14 @@ EXPECTED_V010_CHECKS = {
     ("visits", "chk_visits_duration"): "duration_minutes>0",
     ("visits", "chk_visits_priority"): "prioritybetween1and3",
     ("visits", "chk_visits_status"): "statusin('planned','completed','cancelled')",
+}
+
+
+# Expected CHECK constraints created together with the table in v011.
+# Keep these definitions consistent with v011_visit_trip_legs.py.
+EXPECTED_V011_CHECKS = {
+    ("visit_trip_legs", "chk_trip_legs_position"): "position>0",
+    ("visit_trip_legs", "chk_trip_legs_distance"): "distance_km>=0",
 }
 
 
@@ -264,6 +284,8 @@ def validate_table(cursor, table, require_v009=False):
 
     if table == "users":
         expected_unique_columns = [("email", None)]
+    elif table == "visit_trip_legs":
+        expected_unique_columns = [("visit_id", None), ("position", None)]
 
     if unique_columns != expected_unique_columns:
         raise RuntimeError(f"Invalid unique constraints in table: {table}")
@@ -368,7 +390,12 @@ def normalize_check_clause(clause):
     return clause
 
 
-def validate_business_constraints(cursor, require_v008=True, require_v010=False):
+def validate_business_constraints(
+    cursor,
+    require_v008=True,
+    require_v010=False,
+    require_v011=False
+):
     cursor.execute("""
         SELECT t.TABLE_NAME, t.CONSTRAINT_NAME, t.ENFORCED, c.CHECK_CLAUSE
         FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS t
@@ -387,6 +414,9 @@ def validate_business_constraints(cursor, require_v008=True, require_v010=False)
 
         if expected is None:
             expected = EXPECTED_V010_CHECKS.get(key)
+
+        if expected is None:
+            expected = EXPECTED_V011_CHECKS.get(key)
 
         if expected is None:
             raise RuntimeError(f"Unexpected CHECK constraint: {table}.{name}")
@@ -410,6 +440,12 @@ def validate_business_constraints(cursor, require_v008=True, require_v010=False)
 
     if require_v010:
         missing = sorted(set(EXPECTED_V010_CHECKS) - found)
+
+        if missing:
+            raise RuntimeError(f"Missing CHECK constraints: {missing}")
+
+    if require_v011:
+        missing = sorted(set(EXPECTED_V011_CHECKS) - found)
 
         if missing:
             raise RuntimeError(f"Missing CHECK constraints: {missing}")
@@ -444,6 +480,7 @@ def run_migrations(database=None, *, password):
             (8, None, v008_business_constraints.upgrade),
             (9, None, v009_visit_scheduling.upgrade),
             (10, None, v010_visit_constraints.upgrade),
+            (11, "visit_trip_legs", v011_visit_trip_legs.upgrade),
         ]
 
         known_versions = set()
@@ -485,11 +522,13 @@ def run_migrations(database=None, *, password):
                 )
 
         # Check existing constraints before attempting a partly applied
-        # v008 or v010.
+        # v008 or v010. The v011 table is created with its constraints in
+        # one statement, so if the table exists, they must exist too.
         validate_business_constraints(
             cursor,
             require_v008=8 in applied_versions,
             require_v010=10 in applied_versions,
+            require_v011="visit_trip_legs" in existing_tables,
         )
 
         for version, table, upgrade in migrations:
@@ -514,6 +553,14 @@ def run_migrations(database=None, *, password):
             elif table not in existing_tables:
                 upgrade(cursor)
                 validate_table(cursor, table)
+
+                if version == 11:
+                    validate_business_constraints(
+                        cursor,
+                        require_v008=True,
+                        require_v010=True,
+                        require_v011=True,
+                    )
 
             record_migration(cursor, version)
             connection.commit()

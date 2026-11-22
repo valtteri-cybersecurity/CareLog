@@ -14,6 +14,7 @@ from carelog.database.migrations import (
     v008_business_constraints,
     v009_visit_scheduling,
     v010_visit_constraints,
+    v011_visit_trip_legs,
 )
 
 
@@ -107,3 +108,9 @@ def cursor_with_expenses(cursor_with_visit_scheduling):
     v008_business_constraints.upgrade(cursor)
 
     return cursor
+
+
+@pytest.fixture
+def cursor_with_visit_trips(cursor_with_visit_scheduling):
+    v011_visit_trip_legs.upgrade(cursor_with_visit_scheduling)
+    return cursor_with_visit_scheduling
