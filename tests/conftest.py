@@ -10,6 +10,8 @@ from carelog.database.migrations import (
     v004_trips,
     v005_visits,
     v006_visit_notes,
+    v007_expenses,
+    v008_business_constraints,
     v009_visit_scheduling,
     v010_visit_constraints,
 )
@@ -91,3 +93,17 @@ def cursor_with_visit_scheduling(cursor_with_visits):
 def cursor_with_visit_notes(cursor_with_visit_scheduling):
     v006_visit_notes.upgrade(cursor_with_visit_scheduling)
     return cursor_with_visit_scheduling
+
+
+@pytest.fixture
+def cursor_with_expenses(cursor_with_visit_scheduling):
+    cursor = cursor_with_visit_scheduling
+
+    # v008 adds CHECK constraints to all of these tables, including
+    # amount > 0 for expenses, so the other tables are created too.
+    v004_trips.upgrade(cursor)
+    v006_visit_notes.upgrade(cursor)
+    v007_expenses.upgrade(cursor)
+    v008_business_constraints.upgrade(cursor)
+
+    return cursor
