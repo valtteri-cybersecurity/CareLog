@@ -4,6 +4,10 @@ from carelog.database.connection import get_connection
 from carelog.database.repositories.insert_service import insert_service
 from carelog.database.repositories.select_service import select_service
 from carelog.database.repositories.select_services import select_services
+from carelog.database.repositories.update_service import (
+    ALLOWED_FIELDS,
+    update_service_record,
+)
 
 
 def add_service(
@@ -141,6 +145,131 @@ def get_services() -> list[dict]:
         services = select_services(cursor)
 
         return services
+
+    finally:
+        if cursor is not None:
+            cursor.close()
+
+        if connection is not None:
+            connection.close()
+
+
+
+def update_service(service_id: int, changes: dict) -> bool:
+
+    # Service ID validation
+
+    if type(service_id) is not int:
+        raise ValueError("Service ID must be an integer")
+
+    if service_id <= 0:
+        raise ValueError("Service ID must be positive")
+
+    # Changes validation
+
+    if not isinstance(changes, dict):
+        raise ValueError("Changes must be a dictionary")
+
+    if not changes:
+        raise ValueError("No fields to update")
+
+    validated_changes = {}
+
+    for field, value in changes.items():
+
+        if field not in ALLOWED_FIELDS:
+            raise ValueError("Invalid service field")
+
+        # Name validation
+
+        if field == "name":
+
+            if not isinstance(value, str):
+                raise ValueError("Service name must be a string")
+
+            value = value.strip()
+
+            if not value:
+                raise ValueError("Service name cannot be empty")
+
+            if len(value) > 150:
+                raise ValueError("Service name cannot exceed 150 characters")
+
+            validated_changes[field] = value
+            continue
+
+        # Description validation
+
+        if field == "description":
+
+            if value is not None:
+
+                if not isinstance(value, str):
+                    raise ValueError("Description must be a string")
+
+                value = value.strip()
+
+                if not value:
+                    value = None
+
+                elif len(value.encode("utf-8")) > 65535:
+                    raise ValueError("Description exceeds database limit")
+
+            validated_changes[field] = value
+            continue
+
+        # Hourly rate validation
+
+        if field == "default_hourly_rate":
+
+            if value is not None:
+
+                if isinstance(value, bool):
+                    raise ValueError("Hourly rate must be a number")
+
+                if not isinstance(value, (int, float, Decimal)):
+                    raise ValueError("Hourly rate must be a number")
+
+                value = Decimal(str(value))
+
+                if not value.is_finite():
+                    raise ValueError("Hourly rate must be finite")
+
+                if value < 0:
+                    raise ValueError("Hourly rate cannot be negative")
+
+                if value > Decimal("99999999.99"):
+                    raise ValueError("Hourly rate exceeds database limit")
+
+                if value != value.quantize(Decimal("0.01")):
+                    raise ValueError("Hourly rate cannot exceed two decimal places")
+
+            validated_changes[field] = value
+            continue
+
+    # Database operation
+
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_connection()
+        cursor = connection.cursor()
+
+        updated = update_service_record(
+            cursor,
+            service_id,
+            validated_changes
+        )
+
+        connection.commit()
+
+        return updated
+
+    except Exception:
+        if connection is not None:
+            connection.rollback()
+        raise
 
     finally:
         if cursor is not None:

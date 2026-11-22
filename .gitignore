@@ -9,3 +9,7 @@ __pycache__/
 *.sqlite3
 exports/
 outputs/
+CLAUDE.md
+
+CLAUDE.local.md
+.claude/settings.local.json
