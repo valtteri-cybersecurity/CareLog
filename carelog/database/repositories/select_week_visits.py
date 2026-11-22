@@ -1,0 +1,88 @@
+from datetime import date, datetime
+
+from pymysql.cursors import Cursor
+
+
+def select_week_visits(
+    cursor: Cursor,
+    week_start: date,
+    next_week_start: date,
+    week_start_utc: datetime,
+    next_week_start_utc: datetime
+) -> list[dict]:
+
+    # Planned visits of the week, and completed visits whose local day is
+    # in the week. Old completed visits without completed_date use
+    # started_at, which is compared with the week's limits in UTC.
+    # Cancelled visits are not included.
+    #
+    # Ordered by the day (completed day first, then planned day), then by
+    # the time, then by priority. Visits without a day or a time come
+    # first, because MySQL sorts NULL first.
+    sql = """
+        SELECT
+            id,
+            client_id,
+            service_id,
+            status,
+            priority,
+            planned_week,
+            planned_date,
+            planned_at,
+            planned_duration_minutes,
+            completed_date,
+            duration_minutes,
+            started_at,
+            ended_at,
+            description,
+            distance_km,
+            price,
+            created_at,
+            updated_at
+        FROM visits
+        WHERE (
+                status = 'planned'
+                AND planned_week = %s
+            )
+            OR (
+                status = 'completed'
+                AND completed_date >= %s
+                AND completed_date < %s
+            )
+            OR (
+                status = 'completed'
+                AND completed_date IS NULL
+                AND started_at >= %s
+                AND started_at < %s
+            )
+        ORDER BY
+            COALESCE(completed_date, planned_date),
+            COALESCE(started_at, planned_at),
+            priority,
+            id
+    """
+
+    cursor.execute(
+        sql,
+        (
+            week_start,
+            week_start,
+            next_week_start,
+            week_start_utc,
+            next_week_start_utc
+        )
+    )
+
+    results = cursor.fetchall()
+    visits = []
+
+    for result in results:
+        visit = {}
+
+        for index, column in enumerate(cursor.description):
+            column_name = column[0]
+            visit[column_name] = result[index]
+
+        visits.append(visit)
+
+    return visits

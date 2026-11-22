@@ -8,6 +8,8 @@ from carelog.database.migrations import (
     v006_visit_notes,
     v007_expenses,
     v008_business_constraints,
+    v009_visit_scheduling,
+    v010_visit_constraints,
 )
 
 
@@ -116,6 +118,26 @@ EXPECTED_CHECKS = {
 }
 
 
+# Columns added to the end of the visits table by migration v009.
+# Keep these definitions consistent with v009_visit_scheduling.py.
+EXPECTED_V009_COLUMNS = [
+    ("planned_date", "date", "YES", None),
+    ("completed_date", "date", "YES", None),
+    ("planned_duration_minutes", "int", "YES", None),
+    ("duration_minutes", "int", "YES", None),
+]
+
+
+# Expected CHECK constraints added by migration v010.
+# Keep these definitions consistent with v010_visit_constraints.py.
+EXPECTED_V010_CHECKS = {
+    ("visits", "chk_visits_planned_duration"): "planned_duration_minutes>0",
+    ("visits", "chk_visits_duration"): "duration_minutes>0",
+    ("visits", "chk_visits_priority"): "prioritybetween1and3",
+    ("visits", "chk_visits_status"): "statusin('planned','completed','cancelled')",
+}
+
+
 def create_migrations_table(cursor):
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -166,7 +188,7 @@ def table_exists(cursor, table):
     return True
 
 
-def validate_table(cursor, table):
+def validate_table(cursor, table, require_v009=False):
     cursor.execute("""
         SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, EXTRA
         FROM INFORMATION_SCHEMA.COLUMNS
@@ -199,7 +221,18 @@ def validate_table(cursor, table):
         if extra != expected_extra:
             raise RuntimeError(f"Invalid column settings: {table}.{name}")
 
-    if columns != EXPECTED_COLUMNS[table]:
+    expected_columns = EXPECTED_COLUMNS[table]
+
+    # Before v009 is recorded, visits may still lack the v009 columns.
+    # It may also already have all of them if a previous run crashed
+    # after ALTER TABLE but before recording the migration.
+    if table == "visits":
+        columns_with_v009 = EXPECTED_COLUMNS["visits"] + EXPECTED_V009_COLUMNS
+
+        if require_v009 or columns == columns_with_v009:
+            expected_columns = columns_with_v009
+
+    if columns != expected_columns:
         raise RuntimeError(f"Invalid columns in table: {table}")
 
     cursor.execute("""
@@ -286,8 +319,8 @@ def validate_table(cursor, table):
 
 
 def normalize_check_clause(clause):
-    # MySQL may escape the quotes of an empty string in CHECK_CLAUSE.
-    clause = clause.replace("\\'\\'", "''")
+    # MySQL may escape quotes in CHECK_CLAUSE, for example \'planned\'.
+    clause = clause.replace("\\'", "'")
 
     # Ignore MySQL formatting without changing quoted string values.
     clause = clause.lower().replace("`", "")
@@ -335,7 +368,7 @@ def normalize_check_clause(clause):
     return clause
 
 
-def validate_business_constraints(cursor, require_all=True):
+def validate_business_constraints(cursor, require_v008=True, require_v010=False):
     cursor.execute("""
         SELECT t.TABLE_NAME, t.CONSTRAINT_NAME, t.ENFORCED, c.CHECK_CLAUSE
         FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS t
@@ -353,6 +386,9 @@ def validate_business_constraints(cursor, require_all=True):
         expected = EXPECTED_CHECKS.get(key)
 
         if expected is None:
+            expected = EXPECTED_V010_CHECKS.get(key)
+
+        if expected is None:
             raise RuntimeError(f"Unexpected CHECK constraint: {table}.{name}")
 
         actual = normalize_check_clause(clause)
@@ -366,9 +402,17 @@ def validate_business_constraints(cursor, require_all=True):
 
         found.add(key)
 
-    if require_all and found != set(EXPECTED_CHECKS):
+    if require_v008:
         missing = sorted(set(EXPECTED_CHECKS) - found)
-        raise RuntimeError(f"Missing CHECK constraints: {missing}")
+
+        if missing:
+            raise RuntimeError(f"Missing CHECK constraints: {missing}")
+
+    if require_v010:
+        missing = sorted(set(EXPECTED_V010_CHECKS) - found)
+
+        if missing:
+            raise RuntimeError(f"Missing CHECK constraints: {missing}")
 
 
 def run_migrations(database=None, *, password):
@@ -398,6 +442,8 @@ def run_migrations(database=None, *, password):
             (6, "visit_notes", v006_visit_notes.upgrade),
             (7, "expenses", v007_expenses.upgrade),
             (8, None, v008_business_constraints.upgrade),
+            (9, None, v009_visit_scheduling.upgrade),
+            (10, None, v010_visit_constraints.upgrade),
         ]
 
         known_versions = set()
@@ -426,7 +472,11 @@ def run_migrations(database=None, *, password):
                 continue
 
             if table_exists(cursor, table):
-                validate_table(cursor, table)
+                validate_table(
+                    cursor,
+                    table,
+                    require_v009=9 in applied_versions,
+                )
                 existing_tables.add(table)
 
             elif version in applied_versions:
@@ -434,19 +484,33 @@ def run_migrations(database=None, *, password):
                     f"Migration {version} is recorded but table {table} is missing"
                 )
 
-        # Check existing constraints before attempting a partly applied v008.
+        # Check existing constraints before attempting a partly applied
+        # v008 or v010.
         validate_business_constraints(
             cursor,
-            require_all=8 in applied_versions,
+            require_v008=8 in applied_versions,
+            require_v010=10 in applied_versions,
         )
 
         for version, table, upgrade in migrations:
             if version in applied_versions:
                 continue
 
-            if table is None:
+            # Migrations 8–10 change existing tables. Their upgrade
+            # functions skip the changes that already exist.
+            if version == 8:
                 upgrade(cursor)
-                validate_business_constraints(cursor)
+                validate_business_constraints(cursor, require_v008=True)
+            elif version == 9:
+                upgrade(cursor)
+                validate_table(cursor, "visits", require_v009=True)
+            elif version == 10:
+                upgrade(cursor)
+                validate_business_constraints(
+                    cursor,
+                    require_v008=True,
+                    require_v010=True,
+                )
             elif table not in existing_tables:
                 upgrade(cursor)
                 validate_table(cursor, table)
