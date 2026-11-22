@@ -41,6 +41,111 @@ def validate_distance_km(
     return distance_km
 
 
+# The fields of one leg of a trip
+TRIP_LEG_FIELDS = ("start_location", "destination", "distance_km")
+
+
+def validate_trip_leg(leg: dict) -> dict:
+
+    # Validates one leg of a trip and returns it as a new dictionary.
+    # The original dictionary is not changed. The order of the legs and
+    # the visit are added later, when the legs are saved.
+
+    if not isinstance(leg, dict):
+        raise ValueError("Trip leg must be a dictionary")
+
+    for field in TRIP_LEG_FIELDS:
+        if field not in leg:
+            raise ValueError("Trip leg is missing a field")
+
+    for field in leg:
+        if field not in TRIP_LEG_FIELDS:
+            raise ValueError("Invalid trip leg field")
+
+    validated_leg = {}
+
+    # Start location and destination follow the same rules
+
+    for field in ("start_location", "destination"):
+        location = leg[field]
+
+        if not isinstance(location, str):
+            raise ValueError("Location must be a string")
+
+        location = location.strip()
+
+        if not location:
+            raise ValueError("Location cannot be empty")
+
+        if len(location) > 255:
+            raise ValueError("Location cannot exceed 255 characters")
+
+        validated_leg[field] = location
+
+    # Distance: the same rules as for a saved trip. None means unknown.
+
+    validated_leg["distance_km"] = validate_distance_km(leg["distance_km"])
+
+    return validated_leg
+
+
+def leg_from_trip(trip: dict) -> dict:
+
+    # A saved trip is only a suggestion. Its route is copied into a new,
+    # independent leg without id or client_id, so changing or deleting
+    # the saved trip later never changes legs saved for visits.
+
+    if not isinstance(trip, dict):
+        raise ValueError("Trip must be a dictionary")
+
+    for field in TRIP_LEG_FIELDS:
+        if field not in trip:
+            raise ValueError("Trip is missing a field")
+
+    leg = {
+        "start_location": trip["start_location"],
+        "destination": trip["destination"],
+        "distance_km": trip["distance_km"],
+    }
+
+    return validate_trip_leg(leg)
+
+
+def calculate_trip_distance(legs: list[dict]) -> Decimal | None:
+
+    # Validates every leg of a trip and returns the total distance.
+    # If the distance of even one leg is unknown (None), the total is
+    # unknown too and None is returned. 0 is a known distance.
+
+    if type(legs) is not list:
+        raise ValueError("Trip legs must be a list")
+
+    if not legs:
+        raise ValueError("A trip needs at least one leg")
+
+    total_km = Decimal("0.00")
+    distance_unknown = False
+
+    # Every leg is validated, also after an unknown distance, so an
+    # invalid leg later in the list is never hidden by a None.
+    for leg in legs:
+        validated_leg = validate_trip_leg(leg)
+
+        if validated_leg["distance_km"] is None:
+            distance_unknown = True
+        else:
+            total_km += validated_leg["distance_km"]
+
+    # The total must also fit in a DECIMAL(10,2) column
+    if total_km > Decimal("99999999.99"):
+        raise ValueError("Total distance exceeds database limit")
+
+    if distance_unknown:
+        return None
+
+    return total_km
+
+
 def add_trip(
     client_id: int,
     start_location: str,

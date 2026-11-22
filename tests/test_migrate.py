@@ -14,7 +14,7 @@ from carelog.database.migrations import (
 from tests.migration_helpers import get_columns, insert_visit, table_exists
 
 
-EXPECTED_VERSIONS = set(range(1, 11))
+EXPECTED_VERSIONS = set(range(1, 12))
 
 
 @pytest.fixture
@@ -43,6 +43,7 @@ def test_run_migrations_creates_tables(cursor, migration_database):
         "visits",
         "visit_notes",
         "expenses",
+        "visit_trip_legs",
         "schema_migrations",
     ]
 
@@ -111,6 +112,8 @@ def test_run_migrations_creates_business_constraints(cursor, migration_database)
         ("visits", "chk_visits_duration", "YES"),
         ("visits", "chk_visits_priority", "YES"),
         ("visits", "chk_visits_status", "YES"),
+        ("visit_trip_legs", "chk_trip_legs_position", "YES"),
+        ("visit_trip_legs", "chk_trip_legs_distance", "YES"),
         ("visit_notes", "chk_notes_content", "YES"),
         ("expenses", "chk_expenses_amount", "YES"),
     }
@@ -216,7 +219,7 @@ def test_interrupted_v010_migration_recovers(cursor, migration_database):
     migrate.run_migrations(migration_database, password="test-only")
 
     # Simulate a crash after some v010 constraints were added.
-    cursor.execute("DELETE FROM schema_migrations WHERE version = 10")
+    cursor.execute("DELETE FROM schema_migrations WHERE version >= 10")
     cursor.execute("ALTER TABLE visits DROP CHECK chk_visits_status")
 
     migrate.run_migrations(migration_database, password="test-only")
@@ -227,8 +230,26 @@ def test_interrupted_v010_migration_recovers(cursor, migration_database):
 
 def test_run_migrations_rejects_unknown_version(cursor, migration_database):
     migrate.run_migrations(migration_database, password="test-only")
-    migrate.record_migration(cursor, 11)
+    migrate.record_migration(cursor, 12)
 
     with pytest.raises(RuntimeError, match="Unknown migration versions"):
         migrate.run_migrations(migration_database, password="test-only")
 
+
+
+def test_interrupted_v011_migration_recovers(cursor, migration_database):
+    migrate.run_migrations(migration_database, password="test-only")
+
+    # Simulate a crash after CREATE TABLE succeeded, but before version 11
+    # was recorded. Creating the table again would fail, so this also
+    # proves that v011 is not applied twice.
+    cursor.execute("DELETE FROM schema_migrations WHERE version = 11")
+
+    migrate.run_migrations(migration_database, password="test-only")
+
+    assert migrate.get_applied_versions(cursor) == EXPECTED_VERSIONS
+    migrate.validate_business_constraints(
+        cursor,
+        require_v010=True,
+        require_v011=True,
+    )
