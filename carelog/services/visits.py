@@ -6,6 +6,7 @@ from carelog.database.connection import get_connection
 from carelog.database.repositories.cancel_visit import cancel_visit_record
 from carelog.database.repositories.complete_visit import complete_visit_record
 from carelog.database.repositories.insert_visit import insert_visit
+from carelog.database.repositories.insert_visit_note import insert_visit_note
 from carelog.database.repositories.select_client import select_client
 from carelog.database.repositories.select_client_visits import select_client_visits
 from carelog.database.repositories.select_planned_visits import select_planned_visits
@@ -16,6 +17,7 @@ from carelog.database.repositories.update_visit import (
     update_visit_record,
 )
 from carelog.services.trips import validate_distance_km
+from carelog.services.visit_notes import validate_note_content
 
 
 # DATE columns hold the user's local calendar day.
@@ -88,6 +90,24 @@ def validate_price(price: Decimal | int | float | None) -> Decimal | None:
         raise ValueError("Price cannot exceed two decimal places")
 
     return price
+
+
+def validate_optional_note(note: str | None) -> str | None:
+
+    # The note field of a visit is optional: None or text with only
+    # spaces or line breaks means that no note is saved. Real text
+    # follows the same rules as add_visit_note().
+
+    if note is None:
+        return None
+
+    if not isinstance(note, str):
+        raise ValueError("Note must be a string")
+
+    if not note.strip():
+        return None
+
+    return validate_note_content(note)
 
 
 def validate_completed_times(
@@ -185,7 +205,8 @@ def add_planned_visit(
     planned_at: datetime | None = None,
     planned_duration_minutes: int | None = None,
     priority: int = 2,
-    description: str | None = None
+    description: str | None = None,
+    note: str | None = None
 ) -> int:
 
     # Client and service ID validation
@@ -267,9 +288,10 @@ def add_planned_visit(
     if priority < 1 or priority > 3:
         raise ValueError("Priority must be between 1 and 3")
 
-    # Description validation
+    # Description and note validation
 
     description = validate_description(description)
+    note = validate_optional_note(note)
 
     # Database operation
 
@@ -302,6 +324,11 @@ def add_planned_visit(
             description
         )
 
+        # The note is saved in the same transaction, so the visit and
+        # the note are either both saved or both rolled back.
+        if note is not None:
+            insert_visit_note(cursor, visit_id, note)
+
         connection.commit()
 
         return visit_id
@@ -328,7 +355,8 @@ def add_completed_visit(
     ended_at: datetime | None = None,
     description: str | None = None,
     distance_km: Decimal | int | float | None = None,
-    price: Decimal | int | float | None = None
+    price: Decimal | int | float | None = None,
+    note: str | None = None
 ) -> int:
 
     # Client and service ID validation
@@ -358,11 +386,12 @@ def add_completed_visit(
         ended_at
     )
 
-    # Description, distance and price validation
+    # Description, distance, price and note validation
 
     description = validate_description(description)
     distance_km = validate_distance_km(distance_km)
     price = validate_price(price)
+    note = validate_optional_note(note)
 
     # Database operation
 
@@ -398,6 +427,10 @@ def add_completed_visit(
             distance_km=distance_km,
             price=price
         )
+
+        # The note is saved in the same transaction as the visit.
+        if note is not None:
+            insert_visit_note(cursor, visit_id, note)
 
         connection.commit()
 
@@ -809,7 +842,8 @@ def complete_visit(
     completed_date: date | None = None,
     duration_minutes: int | None = None,
     started_at: datetime | None = None,
-    ended_at: datetime | None = None
+    ended_at: datetime | None = None,
+    note: str | None = None
 ) -> bool:
 
     # Marks a planned visit as completed. Values that are not given are
@@ -833,6 +867,8 @@ def complete_visit(
         started_at,
         ended_at
     )
+
+    note = validate_optional_note(note)
 
     # Database operation
 
@@ -913,6 +949,11 @@ def complete_visit(
             started_at,
             ended_at
         )
+
+        # The note is added only after a successful completion, in the
+        # same transaction as the status change.
+        if completed and note is not None:
+            insert_visit_note(cursor, visit_id, note)
 
         connection.commit()
 

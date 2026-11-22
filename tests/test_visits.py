@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+import pymysql
 import pytest
 
 from carelog.services.visits import (
@@ -3352,6 +3353,418 @@ def test_cancel_visit_closes_connection_on_error(monkeypatch):
     with pytest.raises(RuntimeError, match="Simulated update failure"):
         cancel_visit(1)
 
+    assert connection.rolled_back is True
+    assert connection.test_cursor.closed is True
+    assert connection.closed is True
+
+
+# VISIT NOTE INTEGRATION TESTS
+
+
+def test_visit_functions_reject_invalid_note():
+    for note in (123, ["Kaupassa"], "ä" * 32768):
+        with pytest.raises(ValueError):
+            add_planned_visit(1, 1, planned_week=date(2026, 11, 23), note=note)
+
+        with pytest.raises(ValueError):
+            add_completed_visit(1, 1, completed_date=date(2026, 11, 18), note=note)
+
+        with pytest.raises(ValueError):
+            complete_visit(1, note=note)
+
+
+def test_visit_functions_save_note_with_visit(
+    cursor_with_visit_notes,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_notes
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    planned_visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_week=date(2026, 11, 23),
+        note="  Muista ostoslista  "
+    )
+
+    completed_visit_id = add_completed_visit(
+        client_id,
+        service_id,
+        completed_date=date(2026, 11, 18),
+        note="Käytiin kaupassa.\nHaettiin lääkkeet."
+    )
+
+    visit_to_complete_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_date=date(2026, 11, 18),
+        planned_duration_minutes=60
+    )
+
+    assert complete_visit(visit_to_complete_id, note="Kaikki hyvin") is True
+
+    cursor.execute("SELECT visit_id, content FROM visit_notes ORDER BY id")
+
+    # Each note belongs to its own visit, stripped and with line breaks kept
+    assert cursor.fetchall() == (
+        (planned_visit_id, "Muista ostoslista"),
+        (completed_visit_id, "Käytiin kaupassa.\nHaettiin lääkkeet."),
+        (visit_to_complete_id, "Kaikki hyvin"),
+    )
+
+    cursor.execute(
+        "SELECT status, duration_minutes FROM visits WHERE id = %s",
+        (visit_to_complete_id,)
+    )
+
+    # The completion itself still uses the planned duration
+    assert cursor.fetchone() == ("completed", 60)
+
+
+def test_visit_functions_skip_empty_notes(
+    cursor_with_visit_notes,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_notes
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    # Without a note, and with empty or blank notes
+    add_planned_visit(client_id, service_id, planned_week=date(2026, 11, 23))
+    add_planned_visit(client_id, service_id, planned_week=date(2026, 11, 23), note="")
+    add_completed_visit(client_id, service_id, completed_date=date(2026, 11, 18), note="   ")
+
+    visit_id = add_planned_visit(client_id, service_id, planned_date=date(2026, 11, 18))
+
+    assert complete_visit(visit_id, note="\n\t") is True
+
+    cursor.execute("SELECT COUNT(*) FROM visits")
+
+    assert cursor.fetchone()[0] == 4
+
+    cursor.execute("SELECT COUNT(*) FROM visit_notes")
+
+    assert cursor.fetchone()[0] == 0
+
+
+def test_complete_visit_does_not_add_note_without_completion(
+    cursor_with_visit_notes,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_notes
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    completed_visit_id = add_completed_visit(
+        client_id,
+        service_id,
+        completed_date=date(2026, 11, 18)
+    )
+
+    # A missing visit
+    assert complete_visit(999999, note="Ei tallenneta") is False
+
+    # A visit that is already completed
+    with pytest.raises(ValueError, match="Only planned visits"):
+        complete_visit(completed_visit_id, note="Ei tallenneta")
+
+    cursor.execute("SELECT COUNT(*) FROM visit_notes")
+
+    assert cursor.fetchone()[0] == 0
+
+
+def test_add_visit_rolls_back_when_note_insert_fails(
+    cursor_with_visit_notes,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_notes
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    # A real database error: the note points to a visit that does not
+    # exist, so the foreign key rejects it after the visit was inserted.
+    def insert_note_with_wrong_visit(cursor, visit_id, content):
+        cursor.execute(
+            "INSERT INTO visit_notes (visit_id, content) VALUES (%s, %s)",
+            (visit_id + 1000000, content)
+        )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.insert_visit_note",
+        insert_note_with_wrong_visit
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    with pytest.raises(pymysql.err.IntegrityError):
+        add_planned_visit(
+            client_id,
+            service_id,
+            planned_week=date(2026, 11, 23),
+            note="Muistiinpano"
+        )
+
+    with pytest.raises(pymysql.err.IntegrityError):
+        add_completed_visit(
+            client_id,
+            service_id,
+            completed_date=date(2026, 11, 18),
+            note="Muistiinpano"
+        )
+
+    # Neither visit was left in the database
+    cursor.execute("SELECT COUNT(*) FROM visits")
+
+    assert cursor.fetchone()[0] == 0
+
+    cursor.execute("SELECT COUNT(*) FROM visit_notes")
+
+    assert cursor.fetchone()[0] == 0
+
+
+def test_complete_visit_rolls_back_when_note_insert_fails(
+    cursor_with_visit_notes,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_notes
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    def insert_note_with_wrong_visit(cursor, visit_id, content):
+        cursor.execute(
+            "INSERT INTO visit_notes (visit_id, content) VALUES (%s, %s)",
+            (visit_id + 1000000, content)
+        )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_date=date(2026, 11, 18),
+        planned_duration_minutes=60
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.insert_visit_note",
+        insert_note_with_wrong_visit
+    )
+
+    with pytest.raises(pymysql.err.IntegrityError):
+        complete_visit(visit_id, note="Muistiinpano")
+
+    # The status change was rolled back together with the note
+    cursor.execute(
+        """
+        SELECT status, completed_date, duration_minutes
+        FROM visits
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    assert cursor.fetchone() == ("planned", None, None)
+
+    cursor.execute("SELECT COUNT(*) FROM visit_notes")
+
+    assert cursor.fetchone()[0] == 0
+
+
+def test_complete_visit_with_note_closes_connection_on_error(monkeypatch):
+
+    class FakeCursor:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeConnection:
+        def __init__(self):
+            self.test_cursor = FakeCursor()
+            self.closed = False
+            self.committed = False
+            self.rolled_back = False
+
+        def cursor(self):
+            return self.test_cursor
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            self.closed = True
+
+    connection = FakeConnection()
+
+    def get_test_connection():
+        return connection
+
+    def select_planned_visit(cursor, visit_id):
+        return {
+            "status": "planned",
+            "planned_date": date(2026, 11, 18),
+            "planned_at": None,
+            "planned_duration_minutes": 60,
+        }
+
+    def complete_record(
+        cursor,
+        visit_id,
+        completed_date,
+        duration_minutes,
+        started_at,
+        ended_at
+    ):
+        return True
+
+    def insert_note_then_fail(cursor, visit_id, content):
+        raise RuntimeError("Simulated note failure")
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.select_visit",
+        select_planned_visit
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.complete_visit_record",
+        complete_record
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.insert_visit_note",
+        insert_note_then_fail
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated note failure"):
+        complete_visit(1, note="Muistiinpano")
+
+    assert connection.committed is False
     assert connection.rolled_back is True
     assert connection.test_cursor.closed is True
     assert connection.closed is True
