@@ -152,6 +152,17 @@ with get_connection(database="") as connection, connection.cursor() as cursor:
 PYTHON
 }
 
+create_database_if_missing() {
+    # .env and carelog_app may exist while the database itself was removed.
+    # Never touch an existing database; only create a missing one.
+    local database_count
+    database_count="$(mysql_admin -N -s -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = '$DB_NAME'")"
+    if [ "$database_count" -eq 0 ]; then
+        echo "Database $DB_NAME is missing; creating an empty database."
+        mysql_admin -e "CREATE DATABASE \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+    fi
+}
+
 check_schema() {
     table_count="$(mysql_admin -N -s -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$DB_NAME'")"
     history_count="$(mysql_admin -N -s -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$DB_NAME' AND table_name = 'schema_migrations'")"
@@ -178,7 +189,7 @@ check_app_permissions() {
             "GRANT "*" ON \`$DB_NAME\`.\`visits\` TO $account" | \
             "GRANT "*" ON \`$DB_NAME\`.\`visit_notes\` TO $account" | \
             "GRANT "*" ON \`$DB_NAME\`.\`expenses\` TO $account") table_grants=1 ;;
-            *) fail "Application account has unexpected grants. Manual review required" ;;
+            *) fail "Application account has unexpected grant: $grant. Manual review required" ;;
         esac
     done <<< "$grants"
 
@@ -207,6 +218,7 @@ WHERE GRANTEE = CONCAT(CHAR(39), '$DB_USER', CHAR(39), '@', CHAR(39), 'localhost
             "TABLE|$DB_NAME|clients|-|UPDATE|NO" | \
             "TABLE|$DB_NAME|services|-|SELECT|NO" | \
             "TABLE|$DB_NAME|services|-|INSERT|NO" | \
+            "TABLE|$DB_NAME|services|-|UPDATE|NO" | \
             "TABLE|$DB_NAME|trips|-|SELECT|NO" | \
             "TABLE|$DB_NAME|trips|-|INSERT|NO" | \
             "TABLE|$DB_NAME|trips|-|UPDATE|NO" | \
@@ -227,7 +239,7 @@ WHERE GRANTEE = CONCAT(CHAR(39), '$DB_USER', CHAR(39), '@', CHAR(39), 'localhost
             "COLUMN|$DB_NAME|users|display_name|SELECT|NO" | \
             "COLUMN|$DB_NAME|users|role|SELECT|NO" | \
             "COLUMN|$DB_NAME|users|is_active|SELECT|NO") ;;
-            *) fail "Application account has excessive table or column privileges. Manual review required" ;;
+            *) fail "Application account has excessive privilege: $permission. Manual review required" ;;
         esac
     done <<< "$permissions"
 
@@ -258,7 +270,7 @@ grant_app_permissions() {
     mysql_admin <<SQL
 GRANT SELECT (id, email, display_name, role, is_active) ON \`$DB_NAME\`.users TO '$DB_USER'@'localhost';
 GRANT SELECT, INSERT, UPDATE ON \`$DB_NAME\`.clients TO '$DB_USER'@'localhost';
-GRANT SELECT, INSERT ON \`$DB_NAME\`.services TO '$DB_USER'@'localhost';
+GRANT SELECT, INSERT, UPDATE ON \`$DB_NAME\`.services TO '$DB_USER'@'localhost';
 GRANT SELECT, INSERT, UPDATE, DELETE ON \`$DB_NAME\`.trips TO '$DB_USER'@'localhost';
 GRANT SELECT, INSERT, UPDATE ON \`$DB_NAME\`.visits TO '$DB_USER'@'localhost';
 GRANT SELECT, INSERT, UPDATE, DELETE ON \`$DB_NAME\`.visit_notes TO '$DB_USER'@'localhost';
@@ -315,6 +327,7 @@ main() {
     check_schema
     check_app_permissions
     validate_app_connection
+    create_database_if_missing
     run_migrations
     echo "CareLog installation completed successfully."
 }

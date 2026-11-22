@@ -2,7 +2,12 @@ from decimal import Decimal
 
 import pytest
 
-from carelog.services.services import add_service, get_service, get_services
+from carelog.services.services import (
+    add_service,
+    get_service,
+    get_services,
+    update_service,
+)
 
 
 def test_add_service_rejects_empty_name():
@@ -462,6 +467,285 @@ def test_get_services_closes_connection_on_error(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Simulated select failure"):
         get_services()
+
+    assert connection.test_cursor.closed is True
+    assert connection.closed is True
+
+
+
+# UPDATE SERVICE TESTS
+
+
+def test_update_service_rejects_invalid_id():
+    with pytest.raises(ValueError):
+        update_service("123", {"name": "Ulkoilu"})
+
+
+def test_update_service_rejects_boolean_id():
+    with pytest.raises(ValueError):
+        update_service(True, {"name": "Ulkoilu"})
+
+
+def test_update_service_rejects_empty_changes():
+    with pytest.raises(ValueError):
+        update_service(1, {})
+
+
+def test_update_service_rejects_invalid_field():
+    with pytest.raises(ValueError):
+        update_service(1, {"id": 5})
+
+
+def test_update_service_rejects_empty_name():
+    with pytest.raises(ValueError):
+        update_service(1, {"name": "   "})
+
+
+def test_update_service_rejects_invalid_description():
+    with pytest.raises(ValueError):
+        update_service(1, {"description": 123})
+
+
+def test_update_service_rejects_negative_rate():
+    with pytest.raises(ValueError):
+        update_service(1, {"default_hourly_rate": -10})
+
+
+def test_update_service_changes_name_and_rate(
+    cursor_with_clients_and_services,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients_and_services
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.services.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO services (
+            name,
+            description,
+            default_hourly_rate
+        )
+        VALUES (%s, %s, %s)
+        """,
+        ("Kaupassa käynti", "Asiointiapu", Decimal("35.50"))
+    )
+
+    service_id = cursor.lastrowid
+
+    updated = update_service(
+        service_id,
+        {
+            "name": "  Apteekkiasiointi  ",
+            "default_hourly_rate": Decimal("40.25")
+        }
+    )
+
+    assert updated is True
+
+    cursor.execute(
+        """
+        SELECT name, description, default_hourly_rate
+        FROM services
+        WHERE id = %s
+        """,
+        (service_id,)
+    )
+
+    # The description was not given, so it must stay the same
+    assert cursor.fetchone() == (
+        "Apteekkiasiointi",
+        "Asiointiapu",
+        Decimal("40.25")
+    )
+
+
+def test_update_service_clears_description_and_rate(
+    cursor_with_clients_and_services,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients_and_services
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.services.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO services (
+            name,
+            description,
+            default_hourly_rate
+        )
+        VALUES (%s, %s, %s)
+        """,
+        ("Kaupassa käynti", "Asiointiapu", Decimal("35.50"))
+    )
+
+    service_id = cursor.lastrowid
+
+    updated = update_service(
+        service_id,
+        {
+            "description": None,
+            "default_hourly_rate": None
+        }
+    )
+
+    assert updated is True
+
+    cursor.execute(
+        """
+        SELECT name, description, default_hourly_rate
+        FROM services
+        WHERE id = %s
+        """,
+        (service_id,)
+    )
+
+    assert cursor.fetchone() == ("Kaupassa käynti", None, None)
+
+
+def test_update_service_returns_false_if_not_found(
+    cursor_with_clients_and_services,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients_and_services
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.services.get_connection",
+        get_test_connection
+    )
+
+    updated = update_service(
+        999999,
+        {"name": "Ulkoilu"}
+    )
+
+    assert updated is False
+
+
+def test_update_service_rolls_back_on_error(
+    cursor_with_clients_and_services,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_clients_and_services
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    def update_then_fail(cursor, service_id, changes):
+        cursor.execute(
+            """
+            UPDATE services
+            SET name = %s
+            WHERE id = %s
+            """,
+            ("Ulkoilu", service_id)
+        )
+
+        raise RuntimeError("Simulated update failure")
+
+    monkeypatch.setattr(
+        "carelog.services.services.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.services.update_service_record",
+        update_then_fail
+    )
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kaupassa käynti",)
+    )
+
+    service_id = cursor.lastrowid
+
+    with pytest.raises(RuntimeError, match="Simulated update failure"):
+        update_service(service_id, {"name": "Ulkoilu"})
+
+    cursor.execute(
+        "SELECT name FROM services WHERE id = %s",
+        (service_id,)
+    )
+
+    assert cursor.fetchone()[0] == "Kaupassa käynti"
+
+
+def test_update_service_closes_connection_on_error(monkeypatch):
+
+    class FakeCursor:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeConnection:
+        def __init__(self):
+            self.test_cursor = FakeCursor()
+            self.closed = False
+
+        def cursor(self):
+            return self.test_cursor
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    connection = FakeConnection()
+
+    def get_test_connection():
+        return connection
+
+    def update_then_fail(cursor, service_id, changes):
+        raise RuntimeError("Simulated update failure")
+
+    monkeypatch.setattr(
+        "carelog.services.services.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.services.update_service_record",
+        update_then_fail
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated update failure"):
+        update_service(1, {"name": "Ulkoilu"})
 
     assert connection.test_cursor.closed is True
     assert connection.closed is True

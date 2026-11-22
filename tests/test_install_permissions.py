@@ -89,6 +89,7 @@ trap cleanup EXIT
 check_migration_user
 check_schema
 check_app_permissions
+create_database_if_missing
 run_migrations
 """
 
@@ -140,7 +141,7 @@ def installer_database():
                 finally:
                     cursor.execute("DROP USER 'carelog_app'@'localhost'")
             finally:
-                cursor.execute(f"DROP DATABASE `{database}`")
+                cursor.execute(f"DROP DATABASE IF EXISTS `{database}`")
 
 
 def install_database(env):
@@ -214,6 +215,10 @@ def test_application_privileges_and_reinstallation(installer_database):
 
         app_cursor.execute("SELECT name FROM services")
         assert app_cursor.fetchone() == ("Test service",)
+        app_cursor.execute(
+            "UPDATE services SET default_hourly_rate = 30 WHERE name = 'Test service'"
+        )
+        assert app_cursor.rowcount == 1
         app_cursor.execute("SELECT id, role FROM users")
         assert app_cursor.fetchall() == ()
         app_cursor.execute(
@@ -241,6 +246,7 @@ def test_application_privileges_and_reinstallation(installer_database):
             "CREATE TABLE denied (id INT)",
             "ALTER TABLE expenses ADD COLUMN denied INT",
             "DROP TABLE expenses",
+            "DELETE FROM services WHERE name = 'Test service'",
             "INSERT INTO users (email, display_name, password_hash, role) "
             "VALUES ('test@example.com', 'Test', 'test-only', 'admin')",
             "DELETE FROM users WHERE id = 1",
@@ -252,6 +258,90 @@ def test_application_privileges_and_reinstallation(installer_database):
         assert_mysql_error(
             app_cursor, ER.COLUMNACCESS_DENIED_ERROR, "SELECT password_hash FROM users",
         )
+
+
+def test_app_privileges_match_permission_matrix(installer_database):
+    cursor, env, _ = installer_database
+    database = env["CARELOG_TEST_DATABASE"]
+    grantee = "'carelog_app'@'localhost'"
+
+    result = install_database(env)
+    assert result.returncode == 0, result.stderr
+
+    # Reinstallation must keep exactly the same privileges.
+    result = install_database(env)
+    assert result.returncode == 0, result.stderr
+
+    # No global privileges: only the USAGE line plus table-level grants.
+    cursor.execute("SHOW GRANTS FOR 'carelog_app'@'localhost'")
+    grants = cursor.fetchall()
+    assert grants[0] == ("GRANT USAGE ON *.* TO `carelog_app`@`localhost`",)
+
+    # No database-wide privileges on any database.
+    cursor.execute(
+        "SELECT TABLE_SCHEMA, PRIVILEGE_TYPE FROM information_schema.SCHEMA_PRIVILEGES "
+        "WHERE GRANTEE = %s",
+        (grantee,)
+    )
+    assert cursor.fetchall() == ()
+
+    cursor.execute(
+        "SELECT TABLE_SCHEMA, TABLE_NAME, PRIVILEGE_TYPE, IS_GRANTABLE "
+        "FROM information_schema.TABLE_PRIVILEGES WHERE GRANTEE = %s",
+        (grantee,)
+    )
+    table_privileges = set(cursor.fetchall())
+
+    expected_table_privileges = set()
+    permission_matrix = {
+        "clients": ["SELECT", "INSERT", "UPDATE"],
+        "services": ["SELECT", "INSERT", "UPDATE"],
+        "trips": ["SELECT", "INSERT", "UPDATE", "DELETE"],
+        "visits": ["SELECT", "INSERT", "UPDATE"],
+        "visit_notes": ["SELECT", "INSERT", "UPDATE", "DELETE"],
+        "expenses": ["SELECT", "INSERT", "UPDATE", "DELETE"],
+    }
+    for table, privileges in permission_matrix.items():
+        for privilege in privileges:
+            expected_table_privileges.add((database, table, privilege, "NO"))
+
+    assert table_privileges == expected_table_privileges
+
+    cursor.execute(
+        "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, PRIVILEGE_TYPE, IS_GRANTABLE "
+        "FROM information_schema.COLUMN_PRIVILEGES WHERE GRANTEE = %s",
+        (grantee,)
+    )
+    column_privileges = set(cursor.fetchall())
+
+    expected_column_privileges = set()
+    for column in ("id", "email", "display_name", "role", "is_active"):
+        expected_column_privileges.add((database, "users", column, "SELECT", "NO"))
+
+    assert column_privileges == expected_column_privileges
+
+
+def test_installation_creates_missing_database(installer_database):
+    cursor, env, _ = installer_database
+    database = env["CARELOG_TEST_DATABASE"]
+
+    # .env and carelog_app exist, but the database was removed.
+    cursor.execute(f"DROP DATABASE `{database}`")
+
+    result = install_database(env)
+    assert result.returncode == 0, result.stderr
+    assert "creating an empty database" in result.stdout
+    assert_no_migrator(cursor)
+
+    cursor.execute(
+        "SELECT DEFAULT_CHARACTER_SET_NAME FROM information_schema.SCHEMATA "
+        "WHERE SCHEMA_NAME = %s",
+        (database,)
+    )
+    assert cursor.fetchone() == ("utf8mb4",)
+
+    cursor.execute(f"USE `{database}`")
+    assert migrate.get_applied_versions(cursor) == set(range(1, 9))
 
 
 def test_failed_installation_restores_app_and_allows_retry(installer_database):

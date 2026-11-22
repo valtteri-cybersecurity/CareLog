@@ -13,6 +13,10 @@ def connect_to_test_mysql():
     if not user:
         pytest.skip("Set CARELOG_TEST_MYSQL_USER to run the MySQL tests")
 
+    # The application account must never be used for tests.
+    if user == "carelog_app":
+        pytest.fail("Do not use carelog_app as CARELOG_TEST_MYSQL_USER; use a separate test user")
+
     def connect(database=None, autocommit=False):
         return pymysql.connect(
             host=os.getenv("CARELOG_TEST_MYSQL_HOST", "127.0.0.1"),
