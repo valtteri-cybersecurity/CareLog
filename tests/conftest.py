@@ -4,7 +4,14 @@ from uuid import uuid4
 import pymysql
 import pytest
 
-from carelog.database.migrations import v002_clients, v003_services, v005_visits
+from carelog.database.migrations import (
+    v002_clients,
+    v003_services,
+    v004_trips,
+    v005_visits,
+    v009_visit_scheduling,
+    v010_visit_constraints,
+)
 
 
 @pytest.fixture
@@ -61,6 +68,19 @@ def cursor_with_clients_and_services(cursor_with_clients):
 
 
 @pytest.fixture
+def cursor_with_trips(cursor_with_clients):
+    v004_trips.upgrade(cursor_with_clients)
+    return cursor_with_clients
+
+
+@pytest.fixture
 def cursor_with_visits(cursor_with_clients_and_services):
     v005_visits.upgrade(cursor_with_clients_and_services)
     return cursor_with_clients_and_services
+
+
+@pytest.fixture
+def cursor_with_visit_scheduling(cursor_with_visits):
+    v009_visit_scheduling.upgrade(cursor_with_visits)
+    v010_visit_constraints.upgrade(cursor_with_visits)
+    return cursor_with_visits

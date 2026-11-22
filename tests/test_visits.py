@@ -1,0 +1,3357 @@
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from carelog.services.visits import (
+    add_completed_visit,
+    add_planned_visit,
+    cancel_visit,
+    complete_visit,
+    get_client_visits,
+    get_planned_visits,
+    get_visit,
+    get_week_visits,
+    update_visit,
+)
+
+
+HELSINKI = ZoneInfo("Europe/Helsinki")
+
+
+# ADD PLANNED VISIT TESTS
+
+
+def test_add_planned_visit_rejects_invalid_ids():
+    invalid_ids = (
+        ("1", 1),
+        (None, 1),
+        (True, 1),
+        (0, 1),
+        (1, -1),
+        (1, True),
+    )
+
+    for client_id, service_id in invalid_ids:
+        with pytest.raises(ValueError):
+            add_planned_visit(
+                client_id,
+                service_id,
+                planned_week=date(2026, 11, 23)
+            )
+
+
+def test_add_planned_visit_rejects_invalid_priority():
+    for priority in (0, 4, True, "2", None):
+        with pytest.raises(ValueError):
+            add_planned_visit(
+                1,
+                1,
+                planned_week=date(2026, 11, 23),
+                priority=priority
+            )
+
+
+def test_add_planned_visit_rejects_invalid_duration():
+    for duration in (0, -30, True, 1.5, "60"):
+        with pytest.raises(ValueError):
+            add_planned_visit(
+                1,
+                1,
+                planned_week=date(2026, 11, 23),
+                planned_duration_minutes=duration
+            )
+
+
+def test_add_planned_visit_rejects_invalid_schedule():
+    invalid_schedules = (
+        # No week, date or time
+        {},
+        # 24.11.2026 is a Tuesday, not a Monday
+        {"planned_week": date(2026, 11, 24)},
+        {"planned_week": datetime(2026, 11, 23, 10, 0, tzinfo=HELSINKI)},
+        {"planned_date": "2026-11-25"},
+        # A time without a time zone
+        {"planned_at": datetime(2026, 11, 25, 10, 0)},
+        # The date is in the following week
+        {
+            "planned_week": date(2026, 11, 23),
+            "planned_date": date(2026, 11, 30),
+        },
+        # The time is on another day than the date
+        {
+            "planned_date": date(2026, 11, 26),
+            "planned_at": datetime(2026, 11, 25, 10, 0, tzinfo=HELSINKI),
+        },
+    )
+
+    for schedule in invalid_schedules:
+        with pytest.raises(ValueError):
+            add_planned_visit(1, 1, **schedule)
+
+
+def test_add_planned_visit_saves_week_only(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_week=date(2026, 11, 23),
+        planned_duration_minutes=60,
+        description="  Ruokaostokset  "
+    )
+
+    cursor.execute(
+        """
+        SELECT client_id, service_id, status, priority,
+               planned_week, planned_date, planned_at,
+               planned_duration_minutes, description
+        FROM visits
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    assert cursor.fetchone() == (
+        client_id,
+        service_id,
+        "planned",
+        2,
+        date(2026, 11, 23),
+        None,
+        None,
+        60,
+        "Ruokaostokset",
+    )
+
+    cursor.execute(
+        """
+        SELECT duration_minutes, completed_date, started_at, ended_at,
+               distance_km, price
+        FROM visits
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    # Nothing about the completed visit is filled in yet
+    assert cursor.fetchone() == (None, None, None, None, None, None)
+
+
+def test_add_planned_visit_saves_date_without_time(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_date=date(2026, 11, 25),
+        planned_duration_minutes=90,
+        priority=1
+    )
+
+    cursor.execute(
+        """
+        SELECT planned_week, planned_date, planned_at,
+               planned_duration_minutes, priority
+        FROM visits
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    # The week is the Monday of the date, and no time is invented
+    assert cursor.fetchone() == (
+        date(2026, 11, 23),
+        date(2026, 11, 25),
+        None,
+        90,
+        1,
+    )
+
+
+def test_add_planned_visit_saves_exact_time_in_utc(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    # 25.11.2026 at 10.00 in Helsinki is 08.00 UTC
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_at=datetime(2026, 11, 25, 10, 0, tzinfo=HELSINKI),
+        planned_duration_minutes=120
+    )
+
+    # Monday 30.11.2026 at 00.30 in Helsinki is still Sunday in UTC.
+    # The week and date must follow the local day.
+    early_visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_at=datetime(2026, 11, 30, 0, 30, tzinfo=HELSINKI)
+    )
+
+    sql = """
+        SELECT planned_week, planned_date, planned_at,
+               planned_duration_minutes
+        FROM visits
+        WHERE id = %s
+    """
+
+    cursor.execute(sql, (visit_id,))
+
+    assert cursor.fetchone() == (
+        date(2026, 11, 23),
+        date(2026, 11, 25),
+        datetime(2026, 11, 25, 8, 0),
+        120,
+    )
+
+    cursor.execute(sql, (early_visit_id,))
+
+    assert cursor.fetchone() == (
+        date(2026, 11, 30),
+        date(2026, 11, 30),
+        datetime(2026, 11, 29, 22, 30),
+        None,
+    )
+
+
+def test_add_planned_visit_saves_null_duration(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_week=date(2026, 11, 23),
+        description="   "
+    )
+
+    cursor.execute(
+        """
+        SELECT planned_duration_minutes, duration_minutes, description
+        FROM visits
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    # No default duration is invented
+    assert cursor.fetchone() == (None, None, None)
+
+
+def test_add_planned_visit_rejects_missing_or_archived_client(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO clients (first_name, last_name, archived_at)
+        VALUES (%s, %s, UTC_TIMESTAMP())
+        """,
+        ("Arkistoitu", "Asiakas")
+    )
+
+    archived_client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    with pytest.raises(ValueError, match="archived"):
+        add_planned_visit(
+            archived_client_id,
+            service_id,
+            planned_week=date(2026, 11, 23)
+        )
+
+    with pytest.raises(ValueError, match="not found"):
+        add_planned_visit(
+            999999,
+            service_id,
+            planned_week=date(2026, 11, 23)
+        )
+
+    cursor.execute("SELECT COUNT(*) FROM visits")
+
+    assert cursor.fetchone()[0] == 0
+
+
+def test_add_planned_visit_rolls_back_on_error(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    def insert_then_fail(
+        cursor,
+        client_id,
+        service_id,
+        status,
+        priority,
+        planned_week,
+        planned_date,
+        planned_at,
+        planned_duration_minutes,
+        description
+    ):
+        cursor.execute(
+            "INSERT INTO visits (client_id, service_id) VALUES (%s, %s)",
+            (client_id, service_id)
+        )
+
+        raise RuntimeError("Simulated insert failure")
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.insert_visit",
+        insert_then_fail
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    with pytest.raises(RuntimeError, match="Simulated insert failure"):
+        add_planned_visit(
+            client_id,
+            service_id,
+            planned_week=date(2026, 11, 23)
+        )
+
+    cursor.execute("SELECT COUNT(*) FROM visits")
+
+    assert cursor.fetchone()[0] == 0
+
+
+def test_add_planned_visit_closes_connection_on_error(monkeypatch):
+
+    class FakeCursor:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeConnection:
+        def __init__(self):
+            self.test_cursor = FakeCursor()
+            self.closed = False
+            self.rolled_back = False
+
+        def cursor(self):
+            return self.test_cursor
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            self.closed = True
+
+    connection = FakeConnection()
+
+    def get_test_connection():
+        return connection
+
+    def select_then_fail(cursor, client_id):
+        raise RuntimeError("Simulated select failure")
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.select_client",
+        select_then_fail
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated select failure"):
+        add_planned_visit(1, 1, planned_week=date(2026, 11, 23))
+
+    assert connection.rolled_back is True
+    assert connection.test_cursor.closed is True
+    assert connection.closed is True
+
+
+
+# ADD COMPLETED VISIT TESTS
+
+
+def test_add_completed_visit_rejects_invalid_ids():
+    invalid_ids = (
+        ("1", 1),
+        (None, 1),
+        (True, 1),
+        (0, 1),
+        (1, -1),
+        (1, True),
+    )
+
+    for client_id, service_id in invalid_ids:
+        with pytest.raises(ValueError):
+            add_completed_visit(
+                client_id,
+                service_id,
+                completed_date=date(2026, 11, 18)
+            )
+
+
+def test_add_completed_visit_rejects_invalid_dates_and_times():
+    tomorrow = datetime.now(HELSINKI) + timedelta(days=1)
+
+    invalid_values = (
+        # No date or start time
+        {},
+        {"completed_date": datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI)},
+        {"completed_date": "2026-11-18"},
+        # A time without a time zone
+        {"started_at": datetime(2026, 11, 18, 10, 0)},
+        # An end time without a start time
+        {
+            "completed_date": date(2026, 11, 18),
+            "ended_at": datetime(2026, 11, 18, 11, 0, tzinfo=HELSINKI),
+        },
+        # The end is before the start, or at the same minute
+        {
+            "started_at": datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
+            "ended_at": datetime(2026, 11, 18, 9, 0, tzinfo=HELSINKI),
+        },
+        {
+            "started_at": datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
+            "ended_at": datetime(2026, 11, 18, 10, 0, 30, tzinfo=HELSINKI),
+        },
+        # The date does not match the local day of the start time
+        {
+            "completed_date": date(2026, 11, 19),
+            "started_at": datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
+        },
+        # A completed visit cannot be in the future
+        {"completed_date": tomorrow.date()},
+        {"started_at": tomorrow},
+    )
+
+    for values in invalid_values:
+        with pytest.raises(ValueError):
+            add_completed_visit(1, 1, **values)
+
+
+def test_add_completed_visit_rejects_invalid_or_conflicting_duration():
+    for duration in (0, -30, True, 1.5, "90"):
+        with pytest.raises(ValueError):
+            add_completed_visit(
+                1,
+                1,
+                completed_date=date(2026, 11, 18),
+                duration_minutes=duration
+            )
+
+    # 10.00–11.30 is 90 minutes, not 60
+    with pytest.raises(ValueError, match="Duration does not match"):
+        add_completed_visit(
+            1,
+            1,
+            started_at=datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
+            ended_at=datetime(2026, 11, 18, 11, 30, tzinfo=HELSINKI),
+            duration_minutes=60
+        )
+
+    # Clocks move forward at 03.00 on 29.3.2026, so 02.30–04.30 on the
+    # wall clock is only 60 minutes of real time.
+    with pytest.raises(ValueError, match="Duration does not match"):
+        add_completed_visit(
+            1,
+            1,
+            started_at=datetime(2026, 3, 29, 2, 30, tzinfo=HELSINKI),
+            ended_at=datetime(2026, 3, 29, 4, 30, tzinfo=HELSINKI),
+            duration_minutes=120
+        )
+
+
+def test_add_completed_visit_rejects_invalid_distance_and_price():
+    invalid_values = (
+        {"distance_km": -1},
+        {"distance_km": True},
+        {"distance_km": float("nan")},
+        {"distance_km": Decimal("8.555")},
+        {"price": -1},
+        {"price": True},
+        {"price": float("inf")},
+        {"price": "35"},
+        {"price": Decimal("35.555")},
+        {"price": Decimal("100000000.00")},
+    )
+
+    for values in invalid_values:
+        with pytest.raises(ValueError):
+            add_completed_visit(
+                1,
+                1,
+                completed_date=date(2026, 11, 18),
+                **values
+            )
+
+
+def test_add_completed_visit_saves_date_only(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    visit_id = add_completed_visit(
+        client_id,
+        service_id,
+        completed_date=date(2026, 11, 18)
+    )
+
+    cursor.execute(
+        """
+        SELECT client_id, service_id, status, completed_date,
+               duration_minutes, started_at, ended_at,
+               description, distance_km, price
+        FROM visits
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    assert cursor.fetchone() == (
+        client_id,
+        service_id,
+        "completed",
+        date(2026, 11, 18),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+
+    cursor.execute(
+        """
+        SELECT planned_week, planned_date, planned_at,
+               planned_duration_minutes
+        FROM visits
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    # A visit logged directly has no plan
+    assert cursor.fetchone() == (None, None, None, None)
+
+
+def test_add_completed_visit_saves_date_and_duration(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    visit_id = add_completed_visit(
+        client_id,
+        service_id,
+        completed_date=date(2026, 11, 18),
+        duration_minutes=90,
+        description="  Kaupassa käynti  ",
+        distance_km=8.5,
+        price=0
+    )
+
+    cursor.execute(
+        """
+        SELECT completed_date, duration_minutes, started_at, ended_at,
+               description, distance_km, price
+        FROM visits
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    # No start or end time is invented from the duration
+    assert cursor.fetchone() == (
+        date(2026, 11, 18),
+        90,
+        None,
+        None,
+        "Kaupassa käynti",
+        Decimal("8.50"),
+        Decimal("0.00"),
+    )
+
+
+def test_add_completed_visit_saves_exact_times_in_utc(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    # Seconds are dropped, so 10.00–11.30 is exactly 90 minutes
+    visit_id = add_completed_visit(
+        client_id,
+        service_id,
+        started_at=datetime(2026, 11, 18, 10, 0, 45, tzinfo=HELSINKI),
+        ended_at=datetime(2026, 11, 18, 11, 30, 10, tzinfo=HELSINKI)
+    )
+
+    cursor.execute(
+        """
+        SELECT status, completed_date, started_at, ended_at,
+               duration_minutes, planned_week, planned_at
+        FROM visits
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    # 10.00 in Helsinki is 08.00 UTC
+    assert cursor.fetchone() == (
+        "completed",
+        date(2026, 11, 18),
+        datetime(2026, 11, 18, 8, 0),
+        datetime(2026, 11, 18, 9, 30),
+        90,
+        None,
+        None,
+    )
+
+
+def test_add_completed_visit_rejects_archived_client(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO clients (first_name, last_name, archived_at)
+        VALUES (%s, %s, UTC_TIMESTAMP())
+        """,
+        ("Arkistoitu", "Asiakas")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    with pytest.raises(ValueError, match="archived"):
+        add_completed_visit(
+            client_id,
+            service_id,
+            completed_date=date(2026, 11, 18)
+        )
+
+    cursor.execute("SELECT COUNT(*) FROM visits")
+
+    assert cursor.fetchone()[0] == 0
+
+
+def test_add_completed_visit_rolls_back_on_error(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    def insert_then_fail(
+        cursor,
+        client_id,
+        service_id,
+        status,
+        priority,
+        description=None,
+        completed_date=None,
+        started_at=None,
+        ended_at=None,
+        duration_minutes=None,
+        distance_km=None,
+        price=None
+    ):
+        cursor.execute(
+            """
+            INSERT INTO visits (client_id, service_id, status)
+            VALUES (%s, %s, %s)
+            """,
+            (client_id, service_id, status)
+        )
+
+        raise RuntimeError("Simulated insert failure")
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.insert_visit",
+        insert_then_fail
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    with pytest.raises(RuntimeError, match="Simulated insert failure"):
+        add_completed_visit(
+            client_id,
+            service_id,
+            completed_date=date(2026, 11, 18)
+        )
+
+    cursor.execute("SELECT COUNT(*) FROM visits")
+
+    assert cursor.fetchone()[0] == 0
+
+
+def test_add_completed_visit_closes_connection_on_error(monkeypatch):
+
+    class FakeCursor:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeConnection:
+        def __init__(self):
+            self.test_cursor = FakeCursor()
+            self.closed = False
+            self.rolled_back = False
+
+        def cursor(self):
+            return self.test_cursor
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            self.closed = True
+
+    connection = FakeConnection()
+
+    def get_test_connection():
+        return connection
+
+    def select_then_fail(cursor, client_id):
+        raise RuntimeError("Simulated select failure")
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.select_client",
+        select_then_fail
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated select failure"):
+        add_completed_visit(1, 1, completed_date=date(2026, 11, 18))
+
+    assert connection.rolled_back is True
+    assert connection.test_cursor.closed is True
+    assert connection.closed is True
+
+
+# GET VISIT TESTS
+
+
+def test_get_visit_rejects_invalid_id():
+    for visit_id in ("1", None, 0, -1, 1.0):
+        with pytest.raises(ValueError):
+            get_visit(visit_id)
+
+
+def test_get_visit_rejects_boolean_id():
+    with pytest.raises(ValueError):
+        get_visit(True)
+
+
+def test_get_visit_returns_planned_visit(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_at=datetime(2026, 11, 25, 10, 0, tzinfo=HELSINKI),
+        planned_duration_minutes=120,
+        priority=1,
+        description="Ruokaostokset"
+    )
+
+    visit = get_visit(visit_id)
+
+    # All columns are returned, including the ones added by v009
+    assert set(visit) == {
+        "id",
+        "client_id",
+        "service_id",
+        "status",
+        "priority",
+        "planned_week",
+        "planned_date",
+        "planned_at",
+        "planned_duration_minutes",
+        "completed_date",
+        "duration_minutes",
+        "started_at",
+        "ended_at",
+        "description",
+        "distance_km",
+        "price",
+        "created_at",
+        "updated_at",
+    }
+
+    assert visit["id"] == visit_id
+    assert visit["client_id"] == client_id
+    assert visit["service_id"] == service_id
+    assert visit["status"] == "planned"
+    assert visit["priority"] == 1
+    assert visit["planned_week"] == date(2026, 11, 23)
+    assert visit["planned_date"] == date(2026, 11, 25)
+
+    # Returned in UTC, as stored
+    assert visit["planned_at"] == datetime(2026, 11, 25, 8, 0)
+    assert visit["planned_duration_minutes"] == 120
+    assert visit["description"] == "Ruokaostokset"
+
+    # The completed fields are still empty
+    assert visit["completed_date"] is None
+    assert visit["duration_minutes"] is None
+    assert visit["started_at"] is None
+    assert visit["ended_at"] is None
+
+    assert isinstance(visit["created_at"], datetime)
+    assert isinstance(visit["updated_at"], datetime)
+
+
+def test_get_visit_returns_completed_visit(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    visit_id = add_completed_visit(
+        client_id,
+        service_id,
+        started_at=datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
+        ended_at=datetime(2026, 11, 18, 11, 30, tzinfo=HELSINKI),
+        distance_km=Decimal("8.50"),
+        price=Decimal("48.00")
+    )
+
+    visit = get_visit(visit_id)
+
+    assert visit["status"] == "completed"
+    assert visit["completed_date"] == date(2026, 11, 18)
+    assert visit["started_at"] == datetime(2026, 11, 18, 8, 0)
+    assert visit["ended_at"] == datetime(2026, 11, 18, 9, 30)
+    assert visit["duration_minutes"] == 90
+    assert visit["distance_km"] == Decimal("8.50")
+    assert visit["price"] == Decimal("48.00")
+
+    # A visit logged directly has no plan
+    assert visit["planned_week"] is None
+    assert visit["planned_date"] is None
+    assert visit["planned_at"] is None
+    assert visit["planned_duration_minutes"] is None
+
+
+def test_get_visit_returns_none_if_not_found(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    visit = get_visit(999999)
+
+    assert visit is None
+
+
+def test_get_visit_closes_connection_on_error(monkeypatch):
+
+    class FakeCursor:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeConnection:
+        def __init__(self):
+            self.test_cursor = FakeCursor()
+            self.closed = False
+
+        def cursor(self):
+            return self.test_cursor
+
+        def close(self):
+            self.closed = True
+
+    connection = FakeConnection()
+
+    def get_test_connection():
+        return connection
+
+    def select_then_fail(cursor, visit_id):
+        raise RuntimeError("Simulated select failure")
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.select_visit",
+        select_then_fail
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated select failure"):
+        get_visit(1)
+
+    assert connection.test_cursor.closed is True
+    assert connection.closed is True
+
+
+# GET CLIENT VISITS TESTS
+
+
+def test_get_client_visits_rejects_invalid_client_id():
+    for client_id in ("1", None, True, 0, -1):
+        with pytest.raises(ValueError):
+            get_client_visits(client_id)
+
+
+def test_get_client_visits_returns_empty_list(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    visits = get_client_visits(client_id)
+
+    assert visits == []
+
+
+def test_get_client_visits_returns_all_statuses_newest_first(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    # Inserted in mixed order: status, planned week, planned date,
+    # completed date and planned duration
+    visit_rows = (
+        ("completed", None, None, date(2026, 11, 18), None),
+        ("cancelled", date(2026, 11, 9), None, None, 60),
+        ("planned", date(2026, 11, 30), None, None, 90),
+        ("planned", date(2026, 11, 23), date(2026, 11, 25), None, 120),
+    )
+
+    for status, week, planned_date, completed_date, duration in visit_rows:
+        cursor.execute(
+            """
+            INSERT INTO visits (
+                client_id, service_id, status, planned_week,
+                planned_date, completed_date, planned_duration_minutes
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                client_id,
+                service_id,
+                status,
+                week,
+                planned_date,
+                completed_date,
+                duration
+            )
+        )
+
+    visits = get_client_visits(client_id)
+
+    assert len(visits) == 4
+
+    # Newest first: week 30.11, day 25.11, completed 18.11, week 9.11
+    assert visits[0]["status"] == "planned"
+    assert visits[0]["planned_week"] == date(2026, 11, 30)
+    assert visits[1]["planned_date"] == date(2026, 11, 25)
+    assert visits[2]["status"] == "completed"
+    assert visits[2]["completed_date"] == date(2026, 11, 18)
+    assert visits[3]["status"] == "cancelled"
+
+    # Each visit has the same fields as get_visit() returns
+    assert len(visits[0]) == 18
+    assert visits[1]["planned_duration_minutes"] == 120
+    assert visits[1]["duration_minutes"] is None
+
+
+def test_get_client_visits_excludes_other_clients_visits(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Toinen", "Asiakas")
+    )
+
+    other_client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    for visit_client_id in (client_id, other_client_id, other_client_id):
+        cursor.execute(
+            """
+            INSERT INTO visits (client_id, service_id, planned_week)
+            VALUES (%s, %s, %s)
+            """,
+            (visit_client_id, service_id, date(2026, 11, 23))
+        )
+
+    visits = get_client_visits(client_id)
+
+    assert len(visits) == 1
+    assert visits[0]["client_id"] == client_id
+
+
+def test_get_client_visits_returns_archived_client_visits(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    cursor.execute(
+        """
+        INSERT INTO visits (client_id, service_id, status, completed_date)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (client_id, service_id, "completed", date(2026, 11, 18))
+    )
+
+    visit_id = cursor.lastrowid
+
+    # The client is archived after the visit
+    cursor.execute(
+        "UPDATE clients SET archived_at = UTC_TIMESTAMP() WHERE id = %s",
+        (client_id,)
+    )
+
+    visits = get_client_visits(client_id)
+
+    assert len(visits) == 1
+    assert visits[0]["id"] == visit_id
+
+
+def test_get_client_visits_closes_connection_on_error(monkeypatch):
+
+    class FakeCursor:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeConnection:
+        def __init__(self):
+            self.test_cursor = FakeCursor()
+            self.closed = False
+
+        def cursor(self):
+            return self.test_cursor
+
+        def close(self):
+            self.closed = True
+
+    connection = FakeConnection()
+
+    def get_test_connection():
+        return connection
+
+    def select_then_fail(cursor, client_id):
+        raise RuntimeError("Simulated select failure")
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.select_client_visits",
+        select_then_fail
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated select failure"):
+        get_client_visits(1)
+
+    assert connection.test_cursor.closed is True
+    assert connection.closed is True
+
+
+# GET PLANNED VISITS TESTS
+
+
+def test_get_planned_visits_returns_empty_list(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    visits = get_planned_visits()
+
+    assert visits == []
+
+
+def test_get_planned_visits_returns_only_planned_in_order(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    # The description is used as a label. Times are in UTC.
+    visit_rows = (
+        ("A", "planned", date(2026, 11, 30), None, None, 2),
+        ("B", "planned", date(2026, 11, 23), date(2026, 11, 25), datetime(2026, 11, 25, 12, 0), 2),
+        ("C", "planned", date(2026, 11, 23), date(2026, 11, 25), None, 3),
+        ("D", "planned", date(2026, 11, 23), date(2026, 11, 25), None, 1),
+        ("E", "planned", date(2026, 11, 23), date(2026, 11, 25), datetime(2026, 11, 25, 8, 0), 3),
+        ("F", "planned", date(2026, 11, 23), None, None, 2),
+        # A planned visit left in a past week is still shown
+        ("G", "planned", date(2026, 11, 2), None, None, 2),
+        ("H", "completed", date(2026, 11, 23), None, None, 2),
+        ("I", "cancelled", date(2026, 11, 23), None, None, 2),
+    )
+
+    for label, status, week, planned_date, planned_at, priority in visit_rows:
+        cursor.execute(
+            """
+            INSERT INTO visits (
+                client_id, service_id, status, planned_week,
+                planned_date, planned_at, priority, description
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                client_id,
+                service_id,
+                status,
+                week,
+                planned_date,
+                planned_at,
+                priority,
+                label
+            )
+        )
+
+    visits = get_planned_visits()
+
+    labels = []
+
+    for visit in visits:
+        labels.append(visit["description"])
+
+    # By week, then day (week-only visits first), then time (day-only
+    # visits first), then priority. Completed and cancelled are left out.
+    assert labels == ["G", "F", "D", "C", "E", "B", "A"]
+
+
+def test_get_planned_visits_closes_connection_on_error(monkeypatch):
+
+    class FakeCursor:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeConnection:
+        def __init__(self):
+            self.test_cursor = FakeCursor()
+            self.closed = False
+
+        def cursor(self):
+            return self.test_cursor
+
+        def close(self):
+            self.closed = True
+
+    connection = FakeConnection()
+
+    def get_test_connection():
+        return connection
+
+    def select_then_fail(cursor):
+        raise RuntimeError("Simulated select failure")
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.select_planned_visits",
+        select_then_fail
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated select failure"):
+        get_planned_visits()
+
+    assert connection.test_cursor.closed is True
+    assert connection.closed is True
+
+
+# GET WEEK VISITS TESTS
+
+
+def test_get_week_visits_rejects_invalid_week_start():
+    invalid_values = (
+        # 24.11.2026 is a Tuesday
+        date(2026, 11, 24),
+        datetime(2026, 11, 23, 0, 0),
+        "2026-11-23",
+        None,
+    )
+
+    for week_start in invalid_values:
+        with pytest.raises(ValueError):
+            get_week_visits(week_start)
+
+
+def test_get_week_visits_uses_local_week_limits(monkeypatch):
+
+    class FakeConnection:
+        def cursor(self):
+            return self
+
+        def close(self):
+            pass
+
+    calls = []
+
+    def select_and_remember(
+        cursor,
+        week_start,
+        next_week_start,
+        week_start_utc,
+        next_week_start_utc
+    ):
+        calls.append(
+            (week_start, next_week_start, week_start_utc, next_week_start_utc)
+        )
+        return []
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        FakeConnection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.select_week_visits",
+        select_and_remember
+    )
+
+    get_week_visits(date(2026, 11, 23))
+
+    # Clocks move forward on Sunday 29.3.2026
+    get_week_visits(date(2026, 3, 23))
+
+    # Helsinki is UTC+2 in winter, so the week starts at 22.00 UTC
+    assert calls[0] == (
+        date(2026, 11, 23),
+        date(2026, 11, 30),
+        datetime(2026, 11, 22, 22, 0),
+        datetime(2026, 11, 29, 22, 0),
+    )
+
+    # The week ends in summer time (UTC+3), so it is only 167 hours long
+    assert calls[1] == (
+        date(2026, 3, 23),
+        date(2026, 3, 30),
+        datetime(2026, 3, 22, 22, 0),
+        datetime(2026, 3, 29, 21, 0),
+    )
+
+
+def test_get_week_visits_returns_visits_of_week(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    # Label, status, planned week, planned day, completed day,
+    # planned duration and actual duration
+    visit_rows = (
+        ("week only", "planned", date(2026, 11, 23), None, None, 60, None),
+        ("planned day", "planned", date(2026, 11, 23), date(2026, 11, 25), None, 90, None),
+        ("sunday done", "completed", None, None, date(2026, 11, 29), None, 75),
+        ("next monday done", "completed", None, None, date(2026, 11, 30), None, 60),
+        ("previous sunday done", "completed", None, None, date(2026, 11, 22), None, 60),
+        ("next week", "planned", date(2026, 11, 30), None, None, None, None),
+        ("cancelled", "cancelled", date(2026, 11, 23), date(2026, 11, 24), None, None, None),
+    )
+
+    for row in visit_rows:
+        label, status, week, planned_date, completed_date, planned_minutes, minutes = row
+
+        cursor.execute(
+            """
+            INSERT INTO visits (
+                client_id, service_id, status, planned_week, planned_date,
+                completed_date, planned_duration_minutes, duration_minutes,
+                description
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                client_id,
+                service_id,
+                status,
+                week,
+                planned_date,
+                completed_date,
+                planned_minutes,
+                minutes,
+                label
+            )
+        )
+
+    visits = get_week_visits(date(2026, 11, 23))
+
+    labels = []
+
+    for visit in visits:
+        labels.append(visit["description"])
+
+    # Monday to Sunday only, no cancelled visits, the week-only visit first
+    assert labels == ["week only", "planned day", "sunday done"]
+
+    # Planned and actual durations stay separate and unchanged
+    assert visits[1]["planned_duration_minutes"] == 90
+    assert visits[1]["duration_minutes"] is None
+    assert visits[2]["planned_duration_minutes"] is None
+    assert visits[2]["duration_minutes"] == 75
+
+
+def test_get_week_visits_uses_local_time_for_old_completed_visits(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    # Old completed visits without completed_date. Times are in UTC.
+    # The week of 23.3.2026 ends in summer time.
+    visit_rows = (
+        # Sunday 22.3 at 23.30 in Helsinki: previous week
+        ("before", datetime(2026, 3, 22, 21, 30)),
+        # Monday 23.3 at 00.30 in Helsinki
+        ("monday", datetime(2026, 3, 22, 22, 30)),
+        # Sunday 29.3 at 23.30 in Helsinki (summer time)
+        ("sunday", datetime(2026, 3, 29, 20, 30)),
+        # Monday 30.3 at 00.30 in Helsinki (summer time): next week
+        ("after", datetime(2026, 3, 29, 21, 30)),
+    )
+
+    for label, started_at in visit_rows:
+        cursor.execute(
+            """
+            INSERT INTO visits (
+                client_id, service_id, status, started_at, description
+            )
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (client_id, service_id, "completed", started_at, label)
+        )
+
+    visits = get_week_visits(date(2026, 3, 23))
+
+    labels = []
+
+    for visit in visits:
+        labels.append(visit["description"])
+
+    assert labels == ["monday", "sunday"]
+
+
+def test_get_week_visits_closes_connection_on_error(monkeypatch):
+
+    class FakeCursor:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeConnection:
+        def __init__(self):
+            self.test_cursor = FakeCursor()
+            self.closed = False
+
+        def cursor(self):
+            return self.test_cursor
+
+        def close(self):
+            self.closed = True
+
+    connection = FakeConnection()
+
+    def get_test_connection():
+        return connection
+
+    def select_then_fail(
+        cursor,
+        week_start,
+        next_week_start,
+        week_start_utc,
+        next_week_start_utc
+    ):
+        raise RuntimeError("Simulated select failure")
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.select_week_visits",
+        select_then_fail
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated select failure"):
+        get_week_visits(date(2026, 11, 23))
+
+    assert connection.test_cursor.closed is True
+    assert connection.closed is True
+
+
+# UPDATE VISIT TESTS
+
+
+def test_update_visit_rejects_invalid_id():
+    for visit_id in ("1", None, True, 0, -1):
+        with pytest.raises(ValueError):
+            update_visit(visit_id, {"priority": 1})
+
+
+def test_update_visit_rejects_invalid_changes():
+    invalid_changes = (
+        None,
+        [],
+        {},
+        # Fields that cannot be changed here
+        {"client_id": 2},
+        {"status": "completed"},
+        {"duration_minutes": 60},
+        {"price": 10},
+        # Invalid values
+        {"service_id": True},
+        {"priority": 0},
+        {"priority": "1"},
+        {"planned_duration_minutes": 0},
+        {"description": 123},
+        {"planned_week": date(2026, 11, 24)},
+        {"planned_date": "2026-11-25"},
+        {"planned_at": datetime(2026, 11, 25, 10, 0)},
+    )
+
+    for changes in invalid_changes:
+        with pytest.raises(ValueError):
+            update_visit(1, changes)
+
+
+def test_update_visit_changes_service_priority_and_duration(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Apteekkiasiointi",)
+    )
+
+    new_service_id = cursor.lastrowid
+
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_date=date(2026, 11, 25),
+        planned_duration_minutes=60
+    )
+
+    updated = update_visit(
+        visit_id,
+        {
+            "service_id": new_service_id,
+            "priority": 1,
+            "planned_duration_minutes": 90,
+            "description": "  Reseptilääkkeet  "
+        }
+    )
+
+    assert updated is True
+
+    cursor.execute(
+        """
+        SELECT service_id, priority, planned_duration_minutes, description,
+               planned_week, planned_date, status
+        FROM visits
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    # The schedule was not given, so it stays the same
+    assert cursor.fetchone() == (
+        new_service_id,
+        1,
+        90,
+        "Reseptilääkkeet",
+        date(2026, 11, 23),
+        date(2026, 11, 25),
+        "planned",
+    )
+
+    # Saving the same value again is still a successful update
+    assert update_visit(visit_id, {"priority": 1}) is True
+
+
+def test_update_visit_moves_visit_to_another_time(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    # Wednesday at 10.00, 120 minutes
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_at=datetime(2026, 11, 25, 10, 0, tzinfo=HELSINKI),
+        planned_duration_minutes=120
+    )
+
+    sql = """
+        SELECT planned_week, planned_date, planned_at,
+               planned_duration_minutes
+        FROM visits
+        WHERE id = %s
+    """
+
+    # Moved to Thursday at 12.00
+    update_visit(
+        visit_id,
+        {"planned_at": datetime(2026, 11, 26, 12, 0, tzinfo=HELSINKI)}
+    )
+
+    cursor.execute(sql, (visit_id,))
+
+    assert cursor.fetchone() == (
+        date(2026, 11, 23),
+        date(2026, 11, 26),
+        datetime(2026, 11, 26, 10, 0),
+        120,
+    )
+
+    # Moved to the next week: the week follows the time
+    update_visit(
+        visit_id,
+        {"planned_at": datetime(2026, 12, 1, 9, 0, tzinfo=HELSINKI)}
+    )
+
+    cursor.execute(sql, (visit_id,))
+
+    assert cursor.fetchone() == (
+        date(2026, 11, 30),
+        date(2026, 12, 1),
+        datetime(2026, 12, 1, 7, 0),
+        120,
+    )
+
+
+def test_update_visit_clears_time_and_moves_day(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_at=datetime(2026, 11, 25, 10, 0, tzinfo=HELSINKI),
+        planned_duration_minutes=120
+    )
+
+    sql = """
+        SELECT planned_week, planned_date, planned_at,
+               planned_duration_minutes
+        FROM visits
+        WHERE id = %s
+    """
+
+    # From an exact time to the day level: the day and week stay
+    update_visit(visit_id, {"planned_at": None})
+
+    cursor.execute(sql, (visit_id,))
+
+    assert cursor.fetchone() == (
+        date(2026, 11, 23),
+        date(2026, 11, 25),
+        None,
+        120,
+    )
+
+    # To another day in the next week
+    update_visit(visit_id, {"planned_date": date(2026, 12, 2)})
+
+    cursor.execute(sql, (visit_id,))
+
+    assert cursor.fetchone() == (date(2026, 11, 30), date(2026, 12, 2), None, 120)
+
+    # From the day level to the week level: only the week stays
+    update_visit(visit_id, {"planned_date": None})
+
+    cursor.execute(sql, (visit_id,))
+
+    assert cursor.fetchone() == (date(2026, 11, 30), None, None, 120)
+
+
+def test_update_visit_rejects_conflicting_schedule(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    # Wednesday 25.11.2026 at 10.00
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_at=datetime(2026, 11, 25, 10, 0, tzinfo=HELSINKI)
+    )
+
+    conflicting_changes = (
+        # A new day while the old time would stay on the old day
+        {"planned_date": date(2026, 11, 26)},
+        # A week that does not contain the planned day
+        {"planned_week": date(2026, 11, 30)},
+        # Clearing the day but keeping the time
+        {"planned_date": None},
+        # A new time on another day than the given date
+        {
+            "planned_at": datetime(2026, 11, 26, 12, 0, tzinfo=HELSINKI),
+            "planned_date": date(2026, 11, 25),
+        },
+        # A planned visit must keep at least its week
+        {"planned_at": None, "planned_date": None, "planned_week": None},
+    )
+
+    for changes in conflicting_changes:
+        with pytest.raises(ValueError):
+            update_visit(visit_id, changes)
+
+    cursor.execute(
+        "SELECT planned_week, planned_date, planned_at FROM visits WHERE id = %s",
+        (visit_id,)
+    )
+
+    assert cursor.fetchone() == (
+        date(2026, 11, 23),
+        date(2026, 11, 25),
+        datetime(2026, 11, 25, 8, 0),
+    )
+
+
+def test_update_visit_returns_false_if_not_found(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    updated = update_visit(999999, {"priority": 1})
+
+    assert updated is False
+
+
+def test_update_visit_rejects_completed_and_cancelled_visits(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    for status in ("completed", "cancelled"):
+        cursor.execute(
+            """
+            INSERT INTO visits (client_id, service_id, status, planned_week)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (client_id, service_id, status, date(2026, 11, 23))
+        )
+
+        visit_id = cursor.lastrowid
+
+        with pytest.raises(ValueError, match="Only planned visits"):
+            update_visit(visit_id, {"priority": 1})
+
+        cursor.execute(
+            "SELECT status, priority FROM visits WHERE id = %s",
+            (visit_id,)
+        )
+
+        assert cursor.fetchone() == (status, 2)
+
+
+def test_update_visit_rolls_back_on_error(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    def update_then_fail(cursor, visit_id, changes):
+        cursor.execute(
+            "UPDATE visits SET priority = %s WHERE id = %s",
+            (1, visit_id)
+        )
+
+        raise RuntimeError("Simulated update failure")
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.update_visit_record",
+        update_then_fail
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_week=date(2026, 11, 23)
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated update failure"):
+        update_visit(visit_id, {"priority": 1})
+
+    cursor.execute(
+        "SELECT priority FROM visits WHERE id = %s",
+        (visit_id,)
+    )
+
+    assert cursor.fetchone()[0] == 2
+
+
+def test_update_visit_closes_connection_on_error(monkeypatch):
+
+    class FakeCursor:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeConnection:
+        def __init__(self):
+            self.test_cursor = FakeCursor()
+            self.closed = False
+            self.rolled_back = False
+
+        def cursor(self):
+            return self.test_cursor
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            self.closed = True
+
+    connection = FakeConnection()
+
+    def get_test_connection():
+        return connection
+
+    def select_then_fail(cursor, visit_id):
+        raise RuntimeError("Simulated select failure")
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.select_visit",
+        select_then_fail
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated select failure"):
+        update_visit(1, {"priority": 1})
+
+    assert connection.rolled_back is True
+    assert connection.test_cursor.closed is True
+    assert connection.closed is True
+
+
+# COMPLETE VISIT TESTS
+
+
+def test_complete_visit_rejects_invalid_id():
+    for visit_id in ("1", None, True, 0, -1):
+        with pytest.raises(ValueError):
+            complete_visit(visit_id)
+
+
+def test_complete_visit_rejects_invalid_times_and_duration():
+    tomorrow = datetime.now(HELSINKI) + timedelta(days=1)
+
+    invalid_values = (
+        {"duration_minutes": 0},
+        {"duration_minutes": True},
+        {"duration_minutes": "90"},
+        {"completed_date": datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI)},
+        {"completed_date": tomorrow.date()},
+        {"started_at": datetime(2026, 11, 18, 10, 0)},
+        {"started_at": tomorrow},
+        {"ended_at": datetime(2026, 11, 18, 11, 0, tzinfo=HELSINKI)},
+        {
+            "started_at": datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
+            "ended_at": datetime(2026, 11, 18, 9, 0, tzinfo=HELSINKI),
+        },
+        {
+            "started_at": datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
+            "ended_at": datetime(2026, 11, 18, 11, 30, tzinfo=HELSINKI),
+            "duration_minutes": 60,
+        },
+        {
+            "completed_date": date(2026, 11, 19),
+            "started_at": datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
+        },
+    )
+
+    for values in invalid_values:
+        with pytest.raises(ValueError):
+            complete_visit(1, **values)
+
+
+def test_complete_visit_with_one_click_uses_plan(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    # 18.11.2026 at 10.00, 120 minutes
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_at=datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
+        planned_duration_minutes=120,
+        priority=1,
+        description="Ruokaostokset"
+    )
+
+    completed = complete_visit(visit_id)
+
+    assert completed is True
+
+    cursor.execute(
+        """
+        SELECT status, completed_date, duration_minutes, started_at, ended_at
+        FROM visits
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    # The planned day, time and duration are accepted as the actual ones.
+    # 10.00–12.00 in Helsinki is 08.00–10.00 UTC.
+    assert cursor.fetchone() == (
+        "completed",
+        date(2026, 11, 18),
+        120,
+        datetime(2026, 11, 18, 8, 0),
+        datetime(2026, 11, 18, 10, 0),
+    )
+
+    cursor.execute(
+        """
+        SELECT client_id, service_id, planned_week, planned_date, planned_at,
+               planned_duration_minutes, priority, description
+        FROM visits
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    # The plan itself is not changed
+    assert cursor.fetchone() == (
+        client_id,
+        service_id,
+        date(2026, 11, 16),
+        date(2026, 11, 18),
+        datetime(2026, 11, 18, 8, 0),
+        120,
+        1,
+        "Ruokaostokset",
+    )
+
+
+def test_complete_visit_with_changed_duration(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_at=datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
+        planned_duration_minutes=120
+    )
+
+    complete_visit(visit_id, duration_minutes=90)
+
+    cursor.execute(
+        """
+        SELECT planned_duration_minutes, duration_minutes, started_at, ended_at
+        FROM visits
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    # The start stays, the end follows the new duration, and the
+    # planned duration is kept as it was
+    assert cursor.fetchone() == (
+        120,
+        90,
+        datetime(2026, 11, 18, 8, 0),
+        datetime(2026, 11, 18, 9, 30),
+    )
+
+
+def test_complete_visit_with_own_day_or_times(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    other_day_visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_at=datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
+        planned_duration_minutes=120
+    )
+
+    own_times_visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_at=datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
+        planned_duration_minutes=120
+    )
+
+    # Done on another day: the old day's time is not copied
+    complete_visit(other_day_visit_id, completed_date=date(2026, 11, 19))
+
+    # Done at other times: the user's times are used
+    complete_visit(
+        own_times_visit_id,
+        started_at=datetime(2026, 11, 18, 13, 0, tzinfo=HELSINKI),
+        ended_at=datetime(2026, 11, 18, 14, 15, tzinfo=HELSINKI)
+    )
+
+    sql = """
+        SELECT completed_date, duration_minutes, started_at, ended_at
+        FROM visits
+        WHERE id = %s
+    """
+
+    cursor.execute(sql, (other_day_visit_id,))
+
+    assert cursor.fetchone() == (date(2026, 11, 19), 120, None, None)
+
+    cursor.execute(sql, (own_times_visit_id,))
+
+    assert cursor.fetchone() == (
+        date(2026, 11, 18),
+        75,
+        datetime(2026, 11, 18, 11, 0),
+        datetime(2026, 11, 18, 12, 15),
+    )
+
+
+def test_complete_visit_without_exact_times(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    # Planned for a day without a time or a duration
+    day_visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_date=date(2026, 11, 18)
+    )
+
+    # Planned only for a week, with a duration
+    week_visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_week=date(2026, 11, 16),
+        planned_duration_minutes=60
+    )
+
+    complete_visit(day_visit_id)
+
+    # A week-only visit gets today's date. The date is read before and
+    # after the call, so the test also works around midnight.
+    today_before = datetime.now(HELSINKI).date()
+    complete_visit(week_visit_id)
+    today_after = datetime.now(HELSINKI).date()
+
+    sql = """
+        SELECT completed_date, duration_minutes, started_at, ended_at
+        FROM visits
+        WHERE id = %s
+    """
+
+    cursor.execute(sql, (day_visit_id,))
+
+    # No times are invented and the missing duration stays NULL
+    assert cursor.fetchone() == (date(2026, 11, 18), None, None, None)
+
+    cursor.execute(sql, (week_visit_id,))
+
+    completed_date, duration, started_at, ended_at = cursor.fetchone()
+
+    assert completed_date in (today_before, today_after)
+    assert duration == 60
+    assert started_at is None
+    assert ended_at is None
+
+
+def test_complete_visit_returns_false_if_not_found(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    completed = complete_visit(999999)
+
+    assert completed is False
+
+
+def test_complete_visit_rejects_completed_and_cancelled_visits(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_date=date(2026, 11, 18),
+        planned_duration_minutes=60
+    )
+
+    complete_visit(visit_id)
+
+    # A second completion is not allowed
+    with pytest.raises(ValueError, match="Only planned visits"):
+        complete_visit(visit_id, duration_minutes=90)
+
+    cursor.execute(
+        """
+        INSERT INTO visits (client_id, service_id, status, planned_week)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (client_id, service_id, "cancelled", date(2026, 11, 16))
+    )
+
+    cancelled_visit_id = cursor.lastrowid
+
+    with pytest.raises(ValueError, match="Only planned visits"):
+        complete_visit(cancelled_visit_id)
+
+    cursor.execute(
+        "SELECT duration_minutes FROM visits WHERE id = %s",
+        (visit_id,)
+    )
+
+    assert cursor.fetchone()[0] == 60
+
+    cursor.execute(
+        "SELECT status, completed_date FROM visits WHERE id = %s",
+        (cancelled_visit_id,)
+    )
+
+    assert cursor.fetchone() == ("cancelled", None)
+
+
+def test_complete_visit_rolls_back_on_error(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    def complete_then_fail(
+        cursor,
+        visit_id,
+        completed_date,
+        duration_minutes,
+        started_at,
+        ended_at
+    ):
+        cursor.execute(
+            "UPDATE visits SET status = 'completed' WHERE id = %s",
+            (visit_id,)
+        )
+
+        raise RuntimeError("Simulated update failure")
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.complete_visit_record",
+        complete_then_fail
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_date=date(2026, 11, 18)
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated update failure"):
+        complete_visit(visit_id)
+
+    cursor.execute(
+        "SELECT status, completed_date FROM visits WHERE id = %s",
+        (visit_id,)
+    )
+
+    assert cursor.fetchone() == ("planned", None)
+
+
+def test_complete_visit_closes_connection_on_error(monkeypatch):
+
+    class FakeCursor:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeConnection:
+        def __init__(self):
+            self.test_cursor = FakeCursor()
+            self.closed = False
+            self.rolled_back = False
+
+        def cursor(self):
+            return self.test_cursor
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            self.closed = True
+
+    connection = FakeConnection()
+
+    def get_test_connection():
+        return connection
+
+    def select_then_fail(cursor, visit_id):
+        raise RuntimeError("Simulated select failure")
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.select_visit",
+        select_then_fail
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated select failure"):
+        complete_visit(1)
+
+    assert connection.rolled_back is True
+    assert connection.test_cursor.closed is True
+    assert connection.closed is True
+
+
+# CANCEL VISIT TESTS
+
+
+def test_cancel_visit_rejects_invalid_id():
+    for visit_id in ("1", None, True, 0, -1):
+        with pytest.raises(ValueError):
+            cancel_visit(visit_id)
+
+
+def test_cancel_visit_changes_only_status(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.lastrowid
+
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_at=datetime(2026, 11, 25, 10, 0, tzinfo=HELSINKI),
+        planned_duration_minutes=120,
+        priority=1,
+        description="Ruokaostokset"
+    )
+
+    sql = """
+        SELECT client_id, service_id, priority, planned_week, planned_date,
+               planned_at, planned_duration_minutes, description, price,
+               distance_km, completed_date, duration_minutes, started_at,
+               ended_at, created_at
+        FROM visits
+        WHERE id = %s
+    """
+
+    cursor.execute(sql, (visit_id,))
+    values_before = cursor.fetchone()
+
+    cancelled = cancel_visit(visit_id)
+
+    assert cancelled is True
+
+    cursor.execute("SELECT status FROM visits WHERE id = %s", (visit_id,))
+
+    assert cursor.fetchone()[0] == "cancelled"
+
+    # Everything else, including the plan and created_at, is kept
+    cursor.execute(sql, (visit_id,))
+
+    assert cursor.fetchone() == values_before
+
+
+def test_cancelled_visit_stays_in_history_only(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_date=date(2026, 11, 18),
+        planned_duration_minutes=60
+    )
+
+    cancel_visit(visit_id)
+
+    # Shown in the visit itself and in the client's history
+    assert get_visit(visit_id)["status"] == "cancelled"
+
+    history = get_client_visits(client_id)
+
+    assert len(history) == 1
+    assert history[0]["id"] == visit_id
+
+    # Left out of the planning views
+    assert get_planned_visits() == []
+    assert get_week_visits(date(2026, 11, 16)) == []
+
+    # Cannot be changed or completed any more
+    with pytest.raises(ValueError, match="Only planned visits"):
+        update_visit(visit_id, {"priority": 1})
+
+    with pytest.raises(ValueError, match="Only planned visits"):
+        complete_visit(visit_id)
+
+
+def test_cancel_visit_returns_false_if_not_found(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cancelled = cancel_visit(999999)
+
+    assert cancelled is False
+
+
+def test_cancel_visit_rejects_completed_and_cancelled_visits(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    completed_visit_id = add_completed_visit(
+        client_id,
+        service_id,
+        completed_date=date(2026, 11, 18),
+        duration_minutes=60
+    )
+
+    planned_visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_week=date(2026, 11, 23)
+    )
+
+    cancel_visit(planned_visit_id)
+
+    # A completed visit is part of the work history
+    with pytest.raises(ValueError, match="Only planned visits"):
+        cancel_visit(completed_visit_id)
+
+    # A visit cannot be cancelled twice
+    with pytest.raises(ValueError, match="Only planned visits"):
+        cancel_visit(planned_visit_id)
+
+    cursor.execute(
+        "SELECT status FROM visits WHERE id = %s",
+        (completed_visit_id,)
+    )
+
+    assert cursor.fetchone()[0] == "completed"
+
+
+def test_cancel_visit_rolls_back_on_error(
+    cursor_with_visit_scheduling,
+    connect_to_test_mysql,
+    monkeypatch
+):
+    cursor = cursor_with_visit_scheduling
+
+    cursor.execute("SELECT DATABASE()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_mysql(database=database)
+
+    def cancel_then_fail(cursor, visit_id):
+        cursor.execute(
+            "UPDATE visits SET status = 'cancelled' WHERE id = %s",
+            (visit_id,)
+        )
+
+        raise RuntimeError("Simulated update failure")
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.cancel_visit_record",
+        cancel_then_fail
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s)",
+        ("Ulkoilu",)
+    )
+
+    service_id = cursor.lastrowid
+
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_week=date(2026, 11, 23)
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated update failure"):
+        cancel_visit(visit_id)
+
+    cursor.execute("SELECT status FROM visits WHERE id = %s", (visit_id,))
+
+    assert cursor.fetchone()[0] == "planned"
+
+
+def test_cancel_visit_closes_connection_on_error(monkeypatch):
+
+    class FakeCursor:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeConnection:
+        def __init__(self):
+            self.test_cursor = FakeCursor()
+            self.closed = False
+            self.rolled_back = False
+
+        def cursor(self):
+            return self.test_cursor
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            self.closed = True
+
+    connection = FakeConnection()
+
+    def get_test_connection():
+        return connection
+
+    def cancel_then_fail(cursor, visit_id):
+        raise RuntimeError("Simulated update failure")
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_connection",
+        get_test_connection
+    )
+
+    monkeypatch.setattr(
+        "carelog.services.visits.cancel_visit_record",
+        cancel_then_fail
+    )
+
+    with pytest.raises(RuntimeError, match="Simulated update failure"):
+        cancel_visit(1)
+
+    assert connection.rolled_back is True
+    assert connection.test_cursor.closed is True
+    assert connection.closed is True
