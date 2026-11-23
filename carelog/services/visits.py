@@ -793,7 +793,10 @@ def update_visit(visit_id: int, changes: dict) -> bool:
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
-        visit = select_visit(cursor, visit_id)
+        # The visit is read and locked before anything is calculated from
+        # it, so the schedule is based on the current values and no other
+        # update can change the row before this transaction ends.
+        visit = select_visit(cursor, visit_id, for_update=True)
 
         if visit is None:
             return False
@@ -813,7 +816,8 @@ def update_visit(visit_id: int, changes: dict) -> bool:
             validated_changes["planned_date"] = planned_date
             validated_changes["planned_at"] = planned_at
 
-        # The record function locks the row and checks the status again.
+        # The record function checks the status again. The row is already
+        # locked by this transaction, so locking it again does not wait.
         updated = update_visit_record(
             cursor,
             visit_id,
@@ -879,7 +883,9 @@ def complete_visit(
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
-        visit = select_visit(cursor, visit_id)
+        # The visit is read and locked before the default values are
+        # taken from the plan, so they come from the current plan.
+        visit = select_visit(cursor, visit_id, for_update=True)
 
         if visit is None:
             return False
