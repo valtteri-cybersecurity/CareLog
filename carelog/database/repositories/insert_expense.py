@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-from pymysql.cursors import Cursor
+from psycopg import Cursor
 
 
 def insert_expense(
@@ -25,6 +25,7 @@ def insert_expense(
             description
         )
         VALUES (%s, %s, %s, %s, %s)
+        RETURNING id
     """
 
     cursor.execute(
@@ -32,4 +33,5 @@ def insert_expense(
         (visit_id, expense_date, amount, category, description)
     )
 
-    return cursor.lastrowid
+    # RETURNING id gives the id that PostgreSQL created for the row.
+    return cursor.fetchone()[0]

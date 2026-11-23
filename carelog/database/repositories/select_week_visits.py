@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pymysql.cursors import Cursor
+from psycopg import Cursor
 
 
 def select_week_visits(
@@ -18,7 +18,7 @@ def select_week_visits(
     #
     # Ordered by the day (completed day first, then planned day), then by
     # the time, then by priority. Visits without a day or a time come
-    # first, because MySQL sorts NULL first.
+    # first, because of NULLS FIRST.
     sql = """
         SELECT
             id,
@@ -56,8 +56,8 @@ def select_week_visits(
                 AND started_at < %s
             )
         ORDER BY
-            COALESCE(completed_date, planned_date),
-            COALESCE(started_at, planned_at),
+            COALESCE(completed_date, planned_date) NULLS FIRST,
+            COALESCE(started_at, planned_at) NULLS FIRST,
             priority,
             id
     """

@@ -1,4 +1,4 @@
-from pymysql.cursors import Cursor
+from psycopg import Cursor
 
 
 def select_visit_status_for_update(cursor: Cursor, visit_id: int) -> str | None:

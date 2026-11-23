@@ -1,7 +1,7 @@
 from datetime import date
 from decimal import Decimal
 
-import pymysql
+import psycopg
 import pytest
 
 from carelog.services.visit_trips import get_visit_trip, save_visit_trip
@@ -22,59 +22,59 @@ THREE_LEGS = [
 @pytest.fixture(autouse=True)
 def block_real_database(monkeypatch):
 
-    # Nothing may reach the real database. Tests that need MySQL use the
+    # Nothing may reach the real database. Tests that need PostgreSQL use the
     # trips_database fixture, which connects to an isolated test database.
 
     def connection_not_allowed():
         raise RuntimeError("Unexpected database connection in a test")
 
     monkeypatch.setattr(
-        "carelog.services.visit_trips.get_connection",
+        "carelog.services.visit_trips.get_postgres_connection",
         connection_not_allowed
     )
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         connection_not_allowed
     )
 
 
 @pytest.fixture
-def trips_database(cursor_with_visit_trips, connect_to_test_mysql, monkeypatch):
-    cursor = cursor_with_visit_trips
+def trips_database(postgres_cursor_with_visit_trips, connect_to_test_postgres, monkeypatch):
+    cursor = postgres_cursor_with_visit_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     # Only a temporary test database is ever used
     assert database.startswith("carelog_test_")
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visit_trips.get_connection",
+        "carelog.services.visit_trips.get_postgres_connection",
         get_test_connection
     )
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     return cursor, client_id, service_id
 
@@ -144,16 +144,17 @@ def test_save_visit_trip_rejects_cancelled_visit(trips_database):
         """
         INSERT INTO visits (client_id, service_id, status, planned_week, distance_km)
         VALUES (%s, %s, %s, %s, %s)
+        RETURNING id
         """,
         (client_id, service_id, "cancelled", date(2026, 11, 16), Decimal("5.00"))
     )
 
-    visit_id = cursor.lastrowid
+    visit_id = cursor.fetchone()[0]
 
     with pytest.raises(ValueError, match="cancelled"):
         save_visit_trip(visit_id, THREE_LEGS)
 
-    assert get_saved_legs(cursor, visit_id) == ()
+    assert get_saved_legs(cursor, visit_id) == []
     assert get_visit_distance(cursor, visit_id) == Decimal("5.00")
 
 
@@ -179,15 +180,15 @@ def test_save_visit_trip_for_planned_and_completed_visit(trips_database):
     assert save_visit_trip(completed_visit_id, one_leg) is True
 
     # Positions start from 1 in the order given by the user
-    assert get_saved_legs(cursor, planned_visit_id) == (
+    assert get_saved_legs(cursor, planned_visit_id) == [
         (1, "Hilman koti", "Ruokakauppa", Decimal("3.20")),
         (2, "Ruokakauppa", "Apteekki", Decimal("1.50")),
         (3, "Apteekki", "Hilman koti", Decimal("4.10")),
-    )
+    ]
 
-    assert get_saved_legs(cursor, completed_visit_id) == (
+    assert get_saved_legs(cursor, completed_visit_id) == [
         (1, "Koti", "Pankki", Decimal("5.00")),
-    )
+    ]
 
     # The total distance is saved on the visit
     assert get_visit_distance(cursor, planned_visit_id) == Decimal("8.80")
@@ -199,7 +200,7 @@ def test_save_visit_trip_for_planned_and_completed_visit(trips_database):
         (planned_visit_id, completed_visit_id)
     )
 
-    assert cursor.fetchall() == (("planned",), ("completed",))
+    assert cursor.fetchall() == [("planned",), ("completed",)]
 
 
 def test_save_visit_trip_with_unknown_and_zero_distance(trips_database):
@@ -297,7 +298,7 @@ def test_manual_distance_and_completion_keep_kilometres(trips_database):
     complete_visit(planned_visit_id)
 
     assert get_visit_distance(cursor, manual_visit_id) == Decimal("12.50")
-    assert get_saved_legs(cursor, manual_visit_id) == ()
+    assert get_saved_legs(cursor, manual_visit_id) == []
 
     assert get_visit_distance(cursor, planned_visit_id) == Decimal("8.80")
     assert len(get_saved_legs(cursor, planned_visit_id)) == 3
@@ -350,7 +351,7 @@ def test_save_visit_trip_rolls_back_after_deleting_old_legs(
         {"start_location": "Kauppa", "destination": "Koti", "distance_km": Decimal("1.00")},
     ]
 
-    with pytest.raises(pymysql.MySQLError):
+    with pytest.raises(psycopg.Error):
         save_visit_trip(visit_id, new_legs)
 
     # The failure happened inside the transaction
@@ -394,7 +395,7 @@ def test_save_visit_trip_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated lock failure")
 
     monkeypatch.setattr(
-        "carelog.services.visit_trips.get_connection",
+        "carelog.services.visit_trips.get_postgres_connection",
         get_test_connection
     )
 
@@ -477,7 +478,7 @@ def test_get_visit_trip_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.visit_trips.get_connection",
+        "carelog.services.visit_trips.get_postgres_connection",
         get_test_connection
     )
 

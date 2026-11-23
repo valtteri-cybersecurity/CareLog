@@ -16,31 +16,30 @@ permissions:
 
 jobs:
   pytest:
-    name: Python 3.12 / MySQL 8.4
+    name: Python 3.12 / PostgreSQL 16
     runs-on: ubuntu-24.04
     timeout-minutes: 15
 
-    # Fresh, disposable database: never connects to a user's own MySQL server.
+    # Fresh, disposable database: never connects to a user's own database server.
     services:
-      mysql:
-        image: mysql:8.4
+      postgres:
+        image: postgres:16
         env:
-          MYSQL_ROOT_PASSWORD: carelog-ci-only-password
-          MYSQL_ROOT_HOST: "%"
+          POSTGRES_PASSWORD: carelog-ci-only-password
         ports:
-          - 3306:3306
+          - 5432:5432
         options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pcarelog-ci-only-password"
+          --health-cmd="pg_isready -h 127.0.0.1 -U postgres"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=10
 
     # Credentials are only for the disposable CI database.
     env:
-      CARELOG_TEST_MYSQL_HOST: 127.0.0.1
-      CARELOG_TEST_MYSQL_PORT: "3306"
-      CARELOG_TEST_MYSQL_USER: root
-      CARELOG_TEST_MYSQL_PASSWORD: carelog-ci-only-password
+      CARELOG_TEST_PG_HOST: 127.0.0.1
+      CARELOG_TEST_PG_PORT: "5432"
+      CARELOG_TEST_PG_USER: postgres
+      CARELOG_TEST_PG_PASSWORD: carelog-ci-only-password
 
     steps:
       - name: Check out repository
@@ -57,8 +56,12 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt
 
-      # Installer-permission tests require a dedicated local root UNIX socket
-      # and change MySQL global settings. Run them separately in an isolated VM.
+      # The tests run only on a server marked as disposable.
+      - name: Mark disposable PostgreSQL test server
+        run: >-
+          docker exec ${{ job.services.postgres.id }}
+          psql -U postgres -c "COMMENT ON DATABASE postgres IS 'carelog-disposable-test-server'"
+
       - name: Run pytest
-        run: python -m pytest -v --ignore=tests/test_install_permissions.py -rs
+        run: python -m pytest -v -rs
 

@@ -1,11 +1,12 @@
-from pymysql.cursors import Cursor
+from psycopg import Cursor
 
 
 def select_planned_visits(cursor: Cursor) -> list[dict]:
 
     # All planned visits, also the ones left in past weeks.
-    # MySQL sorts NULL first, so within a week the visits without a day
-    # come first, and within a day the visits without a time come first.
+    # NULLS FIRST: within a week the visits without a day come first, and
+    # within a day the visits without a time come first. PostgreSQL would
+    # otherwise sort NULL last.
     sql = """
         SELECT
             id,
@@ -28,7 +29,12 @@ def select_planned_visits(cursor: Cursor) -> list[dict]:
             updated_at
         FROM visits
         WHERE status = 'planned'
-        ORDER BY planned_week, planned_date, planned_at, priority, id
+        ORDER BY
+            planned_week NULLS FIRST,
+            planned_date NULLS FIRST,
+            planned_at NULLS FIRST,
+            priority,
+            id
     """
 
     cursor.execute(sql)

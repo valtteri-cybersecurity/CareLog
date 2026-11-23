@@ -1,4 +1,4 @@
-from pymysql.cursors import Cursor
+from psycopg import Cursor
 
 
 def archive_client_record(
@@ -6,9 +6,10 @@ def archive_client_record(
     client_id: int
 ) -> bool:
 
+    # The current time in UTC, as UTC_TIMESTAMP() in MySQL
     sql = """
         UPDATE clients
-        SET archived_at = UTC_TIMESTAMP()
+        SET archived_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC'
         WHERE id = %s
         AND archived_at IS NULL
     """

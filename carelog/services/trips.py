@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from carelog.database.connection import get_connection
+from carelog.database.postgres_connection import get_postgres_connection
 from carelog.database.repositories.delete_trip import delete_trip_record
 from carelog.database.repositories.insert_trip import insert_trip
 from carelog.database.repositories.select_trip import select_trip
@@ -198,7 +198,7 @@ def add_trip(
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         trip_id = insert_trip(
@@ -242,7 +242,7 @@ def get_trip(trip_id: int) -> dict | None:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         trip = select_trip(cursor, trip_id)
@@ -273,7 +273,7 @@ def get_trips(client_id: int) -> list[dict]:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         trips = select_trips(cursor, client_id)
@@ -343,7 +343,7 @@ def update_trip(trip_id: int, changes: dict) -> bool:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         updated = update_trip_record(
@@ -385,7 +385,7 @@ def delete_trip(trip_id: int) -> bool:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         deleted = delete_trip_record(

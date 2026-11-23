@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from carelog.database.connection import get_connection
+from carelog.database.postgres_connection import get_postgres_connection
 from carelog.database.repositories.insert_service import insert_service
 from carelog.database.repositories.select_service import select_service
 from carelog.database.repositories.select_services import select_services
@@ -74,7 +74,7 @@ def add_service(
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         service_id = insert_service(
@@ -117,7 +117,7 @@ def get_service(service_id: int) -> dict | None:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         service = select_service(cursor, service_id)
@@ -139,7 +139,7 @@ def get_services() -> list[dict]:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         services = select_services(cursor)
@@ -253,7 +253,7 @@ def update_service(service_id: int, changes: dict) -> bool:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         updated = update_service_record(

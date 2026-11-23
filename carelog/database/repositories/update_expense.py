@@ -1,4 +1,4 @@
-from pymysql.cursors import Cursor
+from psycopg import Cursor
 
 
 ALLOWED_FIELDS = (
@@ -47,8 +47,8 @@ def update_expense_record(
 ) -> bool:
 
     # Check if expense exists and lock it until the transaction ends.
-    # The rowcount of the UPDATE is not used, because it is 0 when the
-    # new values are the same as the old ones.
+    # The existence is checked here, so the result does not depend on
+    # the rowcount of the UPDATE.
 
     cursor.execute(
         """

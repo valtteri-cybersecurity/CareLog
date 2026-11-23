@@ -1,4 +1,4 @@
-from pymysql.cursors import Cursor
+from psycopg import Cursor
 
 
 def update_visit_note_record(
@@ -8,8 +8,8 @@ def update_visit_note_record(
 ) -> bool:
 
     # Check if note exists and lock it until the transaction ends.
-    # The rowcount of the UPDATE is not used, because it is 0 when the
-    # new content is the same as the old one.
+    # The existence is checked here, so the result does not depend on
+    # the rowcount of the UPDATE.
 
     cursor.execute(
         """

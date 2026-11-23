@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from pymysql.cursors import Cursor
+from psycopg import Cursor
 
 
 def update_visit_distance(

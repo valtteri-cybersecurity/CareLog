@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from pymysql.cursors import Cursor
+from psycopg import Cursor
 
 
 def insert_service(
@@ -17,6 +17,7 @@ def insert_service(
             default_hourly_rate
         )
         VALUES (%s, %s, %s)
+        RETURNING id
     """
 
     cursor.execute(
@@ -24,4 +25,5 @@ def insert_service(
         (name, description, default_hourly_rate)
     )
 
-    return cursor.lastrowid
+    # RETURNING id gives the id that PostgreSQL created for the row.
+    return cursor.fetchone()[0]

@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from pymysql.cursors import Cursor
+from psycopg import Cursor
 
 
 def insert_visit_trip_leg(
@@ -21,6 +21,7 @@ def insert_visit_trip_leg(
             distance_km
         )
         VALUES (%s, %s, %s, %s, %s)
+        RETURNING id
     """
 
     cursor.execute(
@@ -28,4 +29,5 @@ def insert_visit_trip_leg(
         (visit_id, position, start_location, destination, distance_km)
     )
 
-    return cursor.lastrowid
+    # RETURNING id gives the id that PostgreSQL created for the row.
+    return cursor.fetchone()[0]

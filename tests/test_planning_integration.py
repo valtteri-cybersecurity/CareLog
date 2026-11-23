@@ -36,48 +36,48 @@ def block_real_database(monkeypatch):
         raise RuntimeError("Unexpected database connection in a test")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         connection_not_allowed
     )
 
 
 @pytest.fixture
 def planning_database(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     # Only a temporary test database is ever used
     assert database.startswith("carelog_test_")
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     # The planning functions use the Visits service, which looks up
-    # get_connection in its own module.
+    # get_postgres_connection in its own module.
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     return client_id, service_id
 

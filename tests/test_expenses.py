@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-import pymysql
+import psycopg
 import pytest
 
 from carelog.services.expenses import (
@@ -23,13 +23,13 @@ def block_real_database(monkeypatch):
 
     # Unit tests must never reach a real database. If validation breaks
     # and the code tries to connect, the test fails clearly. Tests that
-    # need MySQL replace get_connection with the isolated test database.
+    # need PostgreSQL replace get_postgres_connection with the isolated test database.
 
     def connection_not_allowed():
         raise RuntimeError("Unexpected database connection in a unit test")
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         connection_not_allowed
     )
 
@@ -117,46 +117,47 @@ def test_add_expense_rejects_invalid_visit_id():
 
 
 def test_add_expense_saves_customer_expense(
-    cursor_with_expenses,
-    connect_to_test_mysql,
+    postgres_cursor_with_expenses,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_expenses
+    cursor = postgres_cursor_with_expenses
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
         INSERT INTO visits (client_id, service_id, status, completed_date)
         VALUES (%s, %s, %s, %s)
+        RETURNING id
         """,
         (client_id, service_id, "completed", date(2026, 11, 18))
     )
 
-    visit_id = cursor.lastrowid
+    visit_id = cursor.fetchone()[0]
 
     expense_id = add_expense(
         date(2026, 11, 18),
@@ -185,47 +186,48 @@ def test_add_expense_saves_customer_expense(
 
 
 def test_add_expense_saves_company_expenses(
-    cursor_with_expenses,
-    connect_to_test_mysql,
+    postgres_cursor_with_expenses,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_expenses
+    cursor = postgres_cursor_with_expenses
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     # Expenses can be added to a visit in any status, here a cancelled one
     cursor.execute(
         """
         INSERT INTO visits (client_id, service_id, status, planned_week)
         VALUES (%s, %s, %s, %s)
+        RETURNING id
         """,
         (client_id, service_id, "cancelled", date(2026, 11, 16))
     )
 
-    visit_id = cursor.lastrowid
+    visit_id = cursor.fetchone()[0]
 
     # A general business cost without a visit and an empty description
     general_id = add_expense(
@@ -260,11 +262,11 @@ def test_add_expense_saves_company_expenses(
         """
     )
 
-    assert cursor.fetchall() == (
+    assert cursor.fetchall() == [
         (general_id, None, Decimal("12.50"), "company", None),
         (first_id, visit_id, Decimal("3.00"), "company", "Pysäköinti"),
         (second_id, visit_id, Decimal("3.00"), "company", "Pysäköinti"),
-    )
+    ]
 
     cursor.execute("SELECT status FROM visits WHERE id = %s", (visit_id,))
 
@@ -273,25 +275,25 @@ def test_add_expense_saves_company_expenses(
 
 
 def test_add_expense_rejects_missing_visit(
-    cursor_with_expenses,
-    connect_to_test_mysql,
+    postgres_cursor_with_expenses,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_expenses
+    cursor = postgres_cursor_with_expenses
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
     # The foreign key must reject a visit that does not exist
-    with pytest.raises(pymysql.err.IntegrityError):
+    with pytest.raises(psycopg.IntegrityError):
         add_expense(
             date(2026, 11, 18),
             Decimal("35.80"),
@@ -305,17 +307,17 @@ def test_add_expense_rejects_missing_visit(
 
 
 def test_add_expense_rolls_back_on_error(
-    cursor_with_expenses,
-    connect_to_test_mysql,
+    postgres_cursor_with_expenses,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_expenses
+    cursor = postgres_cursor_with_expenses
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     def insert_then_fail(
         cursor,
@@ -336,7 +338,7 @@ def test_add_expense_rolls_back_on_error(
         raise RuntimeError("Simulated insert failure")
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
@@ -393,7 +395,7 @@ def test_add_expense_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated insert failure")
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
@@ -420,46 +422,47 @@ def test_get_expense_rejects_invalid_id():
 
 
 def test_get_expense_returns_visit_expense(
-    cursor_with_expenses,
-    connect_to_test_mysql,
+    postgres_cursor_with_expenses,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_expenses
+    cursor = postgres_cursor_with_expenses
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
         INSERT INTO visits (client_id, service_id, status, completed_date)
         VALUES (%s, %s, %s, %s)
+        RETURNING id
         """,
         (client_id, service_id, "completed", date(2026, 11, 18))
     )
 
-    visit_id = cursor.lastrowid
+    visit_id = cursor.fetchone()[0]
 
     expense_id = add_expense(
         date(2026, 11, 18),
@@ -486,20 +489,20 @@ def test_get_expense_returns_visit_expense(
 
 
 def test_get_expense_returns_expense_without_visit(
-    cursor_with_expenses,
-    connect_to_test_mysql,
+    postgres_cursor_with_expenses,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_expenses
+    cursor = postgres_cursor_with_expenses
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
@@ -514,20 +517,20 @@ def test_get_expense_returns_expense_without_visit(
 
 
 def test_get_expense_returns_none_if_not_found(
-    cursor_with_expenses,
-    connect_to_test_mysql,
+    postgres_cursor_with_expenses,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_expenses
+    cursor = postgres_cursor_with_expenses
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
@@ -565,7 +568,7 @@ def test_get_expense_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
@@ -591,46 +594,47 @@ def test_get_visit_expenses_rejects_invalid_visit_id():
 
 
 def test_get_visit_expenses_returns_empty_list(
-    cursor_with_expenses,
-    connect_to_test_mysql,
+    postgres_cursor_with_expenses,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_expenses
+    cursor = postgres_cursor_with_expenses
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
         INSERT INTO visits (client_id, service_id, planned_week)
         VALUES (%s, %s, %s)
+        RETURNING id
         """,
         (client_id, service_id, date(2026, 11, 23))
     )
 
-    visit_id = cursor.lastrowid
+    visit_id = cursor.fetchone()[0]
 
     # A general expense without a visit is not a visit expense
     add_expense(date(2026, 11, 17), Decimal("12.50"), "company")
@@ -641,56 +645,58 @@ def test_get_visit_expenses_returns_empty_list(
 
 
 def test_get_visit_expenses_returns_only_this_visit_in_order(
-    cursor_with_expenses,
-    connect_to_test_mysql,
+    postgres_cursor_with_expenses,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_expenses
+    cursor = postgres_cursor_with_expenses
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
         INSERT INTO visits (client_id, service_id, status, completed_date)
         VALUES (%s, %s, %s, %s)
+        RETURNING id
         """,
         (client_id, service_id, "completed", date(2026, 11, 18))
     )
 
-    visit_id = cursor.lastrowid
+    visit_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
         INSERT INTO visits (client_id, service_id, status, planned_week)
         VALUES (%s, %s, %s, %s)
+        RETURNING id
         """,
         (client_id, service_id, "cancelled", date(2026, 11, 16))
     )
 
-    cancelled_visit_id = cursor.lastrowid
+    cancelled_visit_id = cursor.fetchone()[0]
 
     # Inserted in mixed order. Two expenses are on the same day,
     # so their order comes from the id.
@@ -715,7 +721,7 @@ def test_get_visit_expenses_returns_only_this_visit_in_order(
 
     # The client is archived later; the history stays available
     cursor.execute(
-        "UPDATE clients SET archived_at = UTC_TIMESTAMP() WHERE id = %s",
+        "UPDATE clients SET archived_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC' WHERE id = %s",
         (client_id,)
     )
 
@@ -777,7 +783,7 @@ def test_get_visit_expenses_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
@@ -819,20 +825,20 @@ def test_get_expenses_rejects_invalid_filters():
 
 
 def test_get_expenses_returns_empty_list(
-    cursor_with_expenses,
-    connect_to_test_mysql,
+    postgres_cursor_with_expenses,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_expenses
+    cursor = postgres_cursor_with_expenses
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
@@ -840,20 +846,20 @@ def test_get_expenses_returns_empty_list(
 
 
 def test_get_expenses_filters_by_date(
-    cursor_with_expenses,
-    connect_to_test_mysql,
+    postgres_cursor_with_expenses,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_expenses
+    cursor = postgres_cursor_with_expenses
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
@@ -919,20 +925,20 @@ def test_get_expenses_filters_by_date(
 
 
 def test_get_expenses_filters_by_category_and_client(
-    cursor_with_expenses,
-    connect_to_test_mysql,
+    postgres_cursor_with_expenses,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_expenses
+    cursor = postgres_cursor_with_expenses
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
@@ -940,22 +946,22 @@ def test_get_expenses_filters_by_category_and_client(
 
     for first_name in ("Hilma", "Aino", "Kalle"):
         cursor.execute(
-            "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+            "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
             (first_name, "Testi")
         )
 
-        client_ids.append(cursor.lastrowid)
+        client_ids.append(cursor.fetchone()[0])
 
     hilma_id = client_ids[0]
     aino_id = client_ids[1]
     client_without_expenses_id = client_ids[2]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_ids = []
 
@@ -964,11 +970,12 @@ def test_get_expenses_filters_by_category_and_client(
             """
             INSERT INTO visits (client_id, service_id, status, completed_date)
             VALUES (%s, %s, %s, %s)
+            RETURNING id
             """,
             (visit_client_id, service_id, "completed", date(2026, 11, 5))
         )
 
-        visit_ids.append(cursor.lastrowid)
+        visit_ids.append(cursor.fetchone()[0])
 
     expense_rows = (
         (visit_ids[0], date(2026, 11, 5), "customer", "Hilma ostokset"),
@@ -1053,7 +1060,7 @@ def test_get_expenses_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
@@ -1107,46 +1114,47 @@ def test_update_expense_rejects_invalid_changes():
 
 
 def test_update_expense_changes_values(
-    cursor_with_expenses,
-    connect_to_test_mysql,
+    postgres_cursor_with_expenses,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_expenses
+    cursor = postgres_cursor_with_expenses
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
         INSERT INTO visits (client_id, service_id, status, completed_date)
         VALUES (%s, %s, %s, %s)
+        RETURNING id
         """,
         (client_id, service_id, "completed", date(2026, 11, 18))
     )
 
-    visit_id = cursor.lastrowid
+    visit_id = cursor.fetchone()[0]
 
     expense_id = add_expense(
         date(2026, 11, 18),
@@ -1200,36 +1208,36 @@ def test_update_expense_changes_values(
 
 
 def test_update_expense_changes_visit(
-    cursor_with_expenses,
-    connect_to_test_mysql,
+    postgres_cursor_with_expenses,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_expenses
+    cursor = postgres_cursor_with_expenses
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_ids = []
 
@@ -1238,11 +1246,12 @@ def test_update_expense_changes_visit(
             """
             INSERT INTO visits (client_id, service_id, status, completed_date)
             VALUES (%s, %s, %s, %s)
+            RETURNING id
             """,
             (client_id, service_id, "completed", completed_date)
         )
 
-        visit_ids.append(cursor.lastrowid)
+        visit_ids.append(cursor.fetchone()[0])
 
     expense_id = add_expense(
         date(2026, 11, 17),
@@ -1276,7 +1285,7 @@ def test_update_expense_changes_visit(
         update_expense(expense_id, {"visit_id": None})
 
     # A visit that does not exist is rejected by the foreign key
-    with pytest.raises(pymysql.err.IntegrityError):
+    with pytest.raises(psycopg.IntegrityError):
         update_expense(expense_id, {"visit_id": 999999})
 
     cursor.execute(sql, (expense_id,))
@@ -1307,20 +1316,20 @@ def test_update_expense_changes_visit(
 
 
 def test_update_expense_returns_false_if_not_found(
-    cursor_with_expenses,
-    connect_to_test_mysql,
+    postgres_cursor_with_expenses,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_expenses
+    cursor = postgres_cursor_with_expenses
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
@@ -1330,17 +1339,17 @@ def test_update_expense_returns_false_if_not_found(
 
 
 def test_update_expense_rolls_back_on_error(
-    cursor_with_expenses,
-    connect_to_test_mysql,
+    postgres_cursor_with_expenses,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_expenses
+    cursor = postgres_cursor_with_expenses
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     def update_then_fail(cursor, expense_id, changes):
         cursor.execute(
@@ -1351,7 +1360,7 @@ def test_update_expense_rolls_back_on_error(
         raise RuntimeError("Simulated update failure")
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
@@ -1404,7 +1413,7 @@ def test_update_expense_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.expenses.get_connection",
+        "carelog.services.expenses.get_postgres_connection",
         get_test_connection
     )
 
