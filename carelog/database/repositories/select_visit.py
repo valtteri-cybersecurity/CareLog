@@ -1,7 +1,11 @@
 from psycopg import Cursor
 
 
-def select_visit(cursor: Cursor, visit_id: int) -> dict | None:
+def select_visit(
+    cursor: Cursor,
+    visit_id: int,
+    for_update: bool = False
+) -> dict | None:
     sql = """
         SELECT
             id,
@@ -25,6 +29,12 @@ def select_visit(cursor: Cursor, visit_id: int) -> dict | None:
         FROM visits
         WHERE id = %s
     """
+
+    # FOR UPDATE locks the row until the transaction ends. If another
+    # transaction has changed the row but not committed yet, this waits
+    # and then returns the committed, current values.
+    if for_update:
+        sql += " FOR UPDATE"
 
     cursor.execute(sql, (visit_id,))
 

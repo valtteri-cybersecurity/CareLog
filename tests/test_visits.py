@@ -1,3 +1,5 @@
+import threading
+import time
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -2454,7 +2456,7 @@ def test_update_visit_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
-    def select_then_fail(cursor, visit_id):
+    def select_then_fail(cursor, visit_id, for_update=False):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
@@ -3011,7 +3013,7 @@ def test_complete_visit_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
-    def select_then_fail(cursor, visit_id):
+    def select_then_fail(cursor, visit_id, for_update=False):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
@@ -3726,7 +3728,7 @@ def test_complete_visit_with_note_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
-    def select_planned_visit(cursor, visit_id):
+    def select_planned_visit(cursor, visit_id, for_update=False):
         return {
             "status": "planned",
             "planned_date": date(2026, 11, 18),
@@ -3774,6 +3776,284 @@ def test_complete_visit_with_note_closes_connection_on_error(monkeypatch):
     assert connection.rolled_back is True
     assert connection.test_cursor.closed is True
     assert connection.closed is True
+
+
+# LOCKING TESTS
+# A second, real PostgreSQL connection changes the visit and keeps the row
+# locked. The service call runs in a thread and must wait for that lock,
+# and then use the committed, current values.
+
+
+@pytest.fixture
+def lock_database(
+    postgres_cursor_with_visit_notes,
+    connect_to_test_postgres,
+    monkeypatch
+):
+    cursor = postgres_cursor_with_visit_notes
+
+    cursor.execute("SELECT current_database()")
+    database = cursor.fetchone()[0]
+
+    # Only a temporary test database is ever used
+    assert database.startswith("carelog_test_")
+
+    def get_test_connection():
+        return connect_to_test_postgres(database=database)
+
+    monkeypatch.setattr("carelog.services.visits.get_postgres_connection", get_test_connection)
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES ('Hilma', 'Testi') RETURNING id"
+    )
+    client_id = cursor.fetchone()[0]
+
+    cursor.execute("INSERT INTO services (name) VALUES ('Kauppa-asiointi') RETURNING id")
+    service_id = cursor.fetchone()[0]
+
+    # A planned visit on Wednesday 25.11.2026 at 10.00 Helsinki time
+    # (08.00 UTC), planned for 60 minutes
+    cursor.execute(
+        """
+        INSERT INTO visits (
+            client_id, service_id, planned_week, planned_date, planned_at,
+            planned_duration_minutes
+        )
+        VALUES (%s, %s, '2026-11-23', '2026-11-25', '2026-11-25 08:00', 60)
+        RETURNING id
+        """,
+        (client_id, service_id)
+    )
+    visit_id = cursor.fetchone()[0]
+
+    other_connection = get_test_connection()
+
+    try:
+        yield cursor, visit_id, other_connection
+    finally:
+        other_connection.close()
+
+
+def start_in_thread(function, *args, **kwargs):
+    # Runs the service call in its own thread. done is set when the call
+    # has returned or raised, and outcome holds the result or the error.
+    outcome = {}
+    done = threading.Event()
+
+    def run():
+        try:
+            outcome["result"] = function(*args, **kwargs)
+        except Exception as error:
+            outcome["error"] = error
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=run)
+    thread.start()
+
+    return thread, done, outcome
+
+
+def wait_until_waiting_for_lock(cursor, timeout_seconds=10):
+    # Waits until a session of this test database waits for a row lock.
+    # The time limit stops the test instead of hanging.
+    deadline = time.monotonic() + timeout_seconds
+
+    while time.monotonic() < deadline:
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM pg_stat_activity
+            WHERE datname = current_database()
+              AND wait_event_type = 'Lock'
+            """
+        )
+
+        if cursor.fetchone()[0] > 0:
+            return
+
+        time.sleep(0.02)
+
+    pytest.fail("The service call did not wait for the row lock")
+
+
+def test_update_visit_uses_current_locked_schedule(lock_database):
+    cursor, visit_id, other_connection = lock_database
+
+    # The other connection moves the visit to the next week but does not
+    # commit yet, so it keeps the row locked.
+    other_connection.execute(
+        """
+        UPDATE visits
+        SET planned_week = '2026-11-30', planned_date = '2026-12-02', planned_at = NULL
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    # Clearing the time keeps the stored day and week. They must be the
+    # new ones, not the ones before the other change.
+    thread, done, outcome = start_in_thread(update_visit, visit_id, {"planned_at": None})
+
+    wait_until_waiting_for_lock(cursor)
+    assert not done.is_set()
+
+    other_connection.commit()
+
+    assert done.wait(timeout=10)
+    thread.join(timeout=10)
+    assert outcome == {"result": True}
+
+    cursor.execute(
+        "SELECT planned_week, planned_date, planned_at FROM visits WHERE id = %s",
+        (visit_id,)
+    )
+
+    assert cursor.fetchone() == (date(2026, 11, 30), date(2026, 12, 2), None)
+
+
+def test_complete_visit_uses_current_planned_duration(lock_database):
+    cursor, visit_id, other_connection = lock_database
+
+    # A visit planned in the past, without an exact time, for 60 minutes
+    cursor.execute(
+        """
+        UPDATE visits
+        SET planned_week = '2026-11-16', planned_date = '2026-11-20', planned_at = NULL
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    # The other connection changes the planned duration to 90 minutes
+    other_connection.execute(
+        "UPDATE visits SET planned_duration_minutes = 90 WHERE id = %s",
+        (visit_id,)
+    )
+
+    thread, done, outcome = start_in_thread(complete_visit, visit_id)
+
+    wait_until_waiting_for_lock(cursor)
+    assert not done.is_set()
+
+    other_connection.commit()
+
+    assert done.wait(timeout=10)
+    thread.join(timeout=10)
+    assert outcome == {"result": True}
+
+    cursor.execute(
+        "SELECT status, completed_date, duration_minutes, planned_duration_minutes "
+        "FROM visits WHERE id = %s",
+        (visit_id,)
+    )
+
+    # The default duration comes from the current plan, and the plan
+    # itself is not changed.
+    assert cursor.fetchone() == ("completed", date(2026, 11, 20), 90, 90)
+
+
+@pytest.mark.parametrize(
+    ("new_status", "function", "arguments", "message"),
+    [
+        ("cancelled", update_visit, ({"priority": 1},), "Only planned visits can be updated"),
+        ("completed", update_visit, ({"priority": 1},), "Only planned visits can be updated"),
+        ("cancelled", complete_visit, (), "Only planned visits can be completed"),
+    ],
+)
+def test_concurrent_status_change_is_respected(
+    lock_database,
+    new_status,
+    function,
+    arguments,
+    message
+):
+    cursor, visit_id, other_connection = lock_database
+
+    # The other connection cancels or completes the visit
+    other_connection.execute(
+        "UPDATE visits SET status = %s WHERE id = %s",
+        (new_status, visit_id)
+    )
+
+    thread, done, outcome = start_in_thread(function, visit_id, *arguments)
+
+    wait_until_waiting_for_lock(cursor)
+    assert not done.is_set()
+
+    other_connection.commit()
+
+    assert done.wait(timeout=10)
+    thread.join(timeout=10)
+
+    assert isinstance(outcome.get("error"), ValueError)
+    assert str(outcome["error"]) == message
+
+    cursor.execute(
+        "SELECT status, priority, completed_date FROM visits WHERE id = %s",
+        (visit_id,)
+    )
+
+    assert cursor.fetchone() == (new_status, 2, None)
+
+
+def test_error_after_lock_rolls_back_and_releases_the_row(lock_database, monkeypatch):
+    cursor, visit_id, other_connection = lock_database
+
+    cursor.execute(
+        "UPDATE visits SET planned_date = '2026-11-20', planned_week = '2026-11-16', "
+        "planned_at = NULL WHERE id = %s",
+        (visit_id,)
+    )
+
+    def lock_then_fail(cursor, visit_id, completed_date, duration_minutes, started_at, ended_at):
+        # The service has already locked the row. The status is changed
+        # and then the operation fails.
+        cursor.execute("UPDATE visits SET status = 'completed' WHERE id = %s", (visit_id,))
+        raise RuntimeError("Simulated failure after the lock")
+
+    monkeypatch.setattr("carelog.services.visits.complete_visit_record", lock_then_fail)
+
+    with pytest.raises(RuntimeError, match="Simulated failure"):
+        complete_visit(visit_id, note="Ei saa tallentua")
+
+    cursor.execute(
+        "SELECT status, completed_date, duration_minutes FROM visits WHERE id = %s",
+        (visit_id,)
+    )
+    assert cursor.fetchone() == ("planned", None, None)
+
+    cursor.execute("SELECT COUNT(*) FROM visit_notes WHERE visit_id = %s", (visit_id,))
+    assert cursor.fetchone()[0] == 0
+
+    # The lock was released: another connection can lock the row at once
+    other_connection.execute(
+        "SELECT id FROM visits WHERE id = %s FOR UPDATE NOWAIT",
+        (visit_id,)
+    )
+    other_connection.rollback()
+
+
+def test_update_and_complete_still_work_normally(lock_database):
+    cursor, visit_id, other_connection = lock_database
+
+    assert update_visit(visit_id, {"planned_duration_minutes": 45, "priority": 1}) is True
+    assert update_visit(visit_id, {"planned_date": date(2026, 11, 20), "planned_at": None}) is True
+    assert complete_visit(visit_id, note="Kaikki hyvin") is True
+
+    visit = get_visit(visit_id)
+
+    assert visit["status"] == "completed"
+    assert visit["completed_date"] == date(2026, 11, 20)
+    assert visit["duration_minutes"] == 45
+    assert visit["priority"] == 1
+
+    cursor.execute("SELECT content FROM visit_notes WHERE visit_id = %s", (visit_id,))
+    assert cursor.fetchall() == [("Kaikki hyvin",)]
+
+    # A missing visit still returns False
+    assert update_visit(visit_id + 1000, {"priority": 1}) is False
+    assert complete_visit(visit_id + 1000) is False
 
 
 # HOURLY RATE TESTS
