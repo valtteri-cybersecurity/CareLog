@@ -140,6 +140,114 @@ def test_grant_app_permissions_passes_check(app_database):
             assert cursor.fetchone()[0] == expected
 
 
+def test_app_table_privileges_match_application_needs(app_database):
+    cursor, app_user, connect_as_app = app_database
+
+    # Written here on purpose, not copied from APP_TABLE_PRIVILEGES, so
+    # that a privilege added back by mistake makes this test fail. Only
+    # trips and visit_trip_legs need DELETE.
+    expected_privileges = {
+        "clients": ["SELECT", "INSERT", "UPDATE"],
+        "services": ["SELECT", "INSERT", "UPDATE"],
+        "trips": ["SELECT", "INSERT", "UPDATE", "DELETE"],
+        "visits": ["SELECT", "INSERT", "UPDATE"],
+        "visit_notes": ["SELECT", "INSERT", "UPDATE"],
+        "expenses": ["SELECT", "INSERT", "UPDATE"],
+        "visit_trip_legs": ["SELECT", "INSERT", "DELETE"],
+        "users": [],
+        "schema_migrations": [],
+    }
+
+    postgres_permissions.grant_app_permissions(cursor, app_user, get_table_owner(cursor))
+
+    for table, privileges in expected_privileges.items():
+        for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE"):
+            cursor.execute(
+                "SELECT has_table_privilege(%s, %s, %s)",
+                (app_user, table, privilege)
+            )
+
+            assert cursor.fetchone()[0] == (privilege in privileges), (table, privilege)
+
+
+def test_grant_app_permissions_removes_old_delete_privileges(app_database):
+    cursor, app_user, connect_as_app = app_database
+    user = sql.Identifier(app_user)
+
+    # An earlier installation gave DELETE on these tables
+    cursor.execute(sql.SQL("GRANT DELETE ON visit_notes, expenses TO {}").format(user))
+
+    postgres_permissions.grant_app_permissions(cursor, app_user, get_table_owner(cursor))
+    postgres_permissions.check_app_permissions(cursor, app_user)
+
+    for table in ("visit_notes", "expenses"):
+        cursor.execute("SELECT has_table_privilege(%s, %s, 'DELETE')", (app_user, table))
+        assert cursor.fetchone()[0] is False
+
+    # trips and visit_trip_legs keep the DELETE they need
+    for table in ("trips", "visit_trip_legs"):
+        cursor.execute("SELECT has_table_privilege(%s, %s, 'DELETE')", (app_user, table))
+        assert cursor.fetchone()[0] is True
+
+
+def test_app_account_cannot_delete_notes_or_expenses(app_database):
+    cursor, app_user, connect_as_app = app_database
+    postgres_permissions.grant_app_permissions(cursor, app_user, get_table_owner(cursor))
+
+    connection = connect_as_app()
+
+    # autocommit: a failed statement does not stop the next ones
+    connection.autocommit = True
+
+    with connection, connection.cursor() as app_cursor:
+        app_cursor.execute(
+            "INSERT INTO clients (first_name, last_name) VALUES ('Test', 'Client') RETURNING id"
+        )
+        client_id = app_cursor.fetchone()[0]
+        app_cursor.execute("INSERT INTO services (name) VALUES ('Test service') RETURNING id")
+        service_id = app_cursor.fetchone()[0]
+        app_cursor.execute(
+            "INSERT INTO visits (client_id, service_id) VALUES (%s, %s) RETURNING id",
+            (client_id, service_id)
+        )
+        visit_id = app_cursor.fetchone()[0]
+
+        # SELECT, INSERT and UPDATE still work
+        app_cursor.execute(
+            "INSERT INTO visit_notes (visit_id, content) VALUES (%s, 'Muistiinpano') RETURNING id",
+            (visit_id,)
+        )
+        note_id = app_cursor.fetchone()[0]
+        app_cursor.execute("UPDATE visit_notes SET content = 'Muutettu' WHERE id = %s", (note_id,))
+        app_cursor.execute("SELECT content FROM visit_notes WHERE id = %s", (note_id,))
+        assert app_cursor.fetchone()[0] == "Muutettu"
+
+        app_cursor.execute(
+            "INSERT INTO expenses (visit_id, expense_date, amount, category) "
+            "VALUES (%s, '2026-11-20', 12.50, 'customer') RETURNING id",
+            (visit_id,)
+        )
+        expense_id = app_cursor.fetchone()[0]
+        app_cursor.execute("UPDATE expenses SET amount = 13.00 WHERE id = %s", (expense_id,))
+        app_cursor.execute("SELECT amount FROM expenses WHERE id = %s", (expense_id,))
+        assert str(app_cursor.fetchone()[0]) == "13.00"
+
+        # DELETE is denied
+        assert_postgres_error(
+            app_cursor, psycopg.errors.InsufficientPrivilege,
+            "DELETE FROM visit_notes WHERE id = %s", (note_id,),
+        )
+        assert_postgres_error(
+            app_cursor, psycopg.errors.InsufficientPrivilege,
+            "DELETE FROM expenses WHERE id = %s", (expense_id,),
+        )
+
+    cursor.execute("SELECT COUNT(*) FROM visit_notes")
+    assert cursor.fetchone()[0] == 1
+    cursor.execute("SELECT COUNT(*) FROM expenses")
+    assert cursor.fetchone()[0] == 1
+
+
 def test_grant_app_permissions_removes_old_privileges(app_database):
     cursor, app_user, connect_as_app = app_database
     user = sql.Identifier(app_user)
@@ -155,6 +263,8 @@ def test_grant_app_permissions_removes_old_privileges(app_database):
     ("grant_sql", "message"),
     [
         ("GRANT DELETE ON clients TO {}", "excessive privilege: DELETE on clients"),
+        ("GRANT DELETE ON visit_notes TO {}", "excessive privilege: DELETE on visit_notes"),
+        ("GRANT DELETE ON expenses TO {}", "excessive privilege: DELETE on expenses"),
         ("GRANT TRUNCATE ON visits TO {}", "excessive privilege: TRUNCATE on visits"),
         ("GRANT SELECT ON schema_migrations TO {}", "on schema_migrations"),
         ("GRANT SELECT (password_hash) ON users TO {}", "users.password_hash"),
