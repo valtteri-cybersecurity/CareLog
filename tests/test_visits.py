@@ -435,7 +435,8 @@ def test_add_planned_visit_rolls_back_on_error(
         planned_date,
         planned_at,
         planned_duration_minutes,
-        description
+        description,
+        price=None
     ):
         cursor.execute(
             "INSERT INTO visits (client_id, service_id) VALUES (%s, %s)",
@@ -4053,3 +4054,173 @@ def test_update_and_complete_still_work_normally(lock_database):
     # A missing visit still returns False
     assert update_visit(visit_id + 1000, {"priority": 1}) is False
     assert complete_visit(visit_id + 1000) is False
+
+
+# HOURLY RATE TESTS
+# visits.price is the hourly rate of the visit.
+
+
+def test_add_planned_visit_rejects_invalid_price():
+    invalid_prices = (-1, Decimal("-0.01"), True, "35", float("inf"), Decimal("35.555"))
+
+    for price in invalid_prices:
+        with pytest.raises(ValueError):
+            add_planned_visit(
+                1,
+                1,
+                planned_week=date(2026, 11, 23),
+                price=price
+            )
+
+
+@pytest.fixture
+def rate_database(
+    postgres_cursor_with_visit_notes,
+    connect_to_test_postgres,
+    monkeypatch
+):
+    # A client and a service with the default hourly rate 35.00 €
+    cursor = postgres_cursor_with_visit_notes
+
+    cursor.execute("SELECT current_database()")
+    database = cursor.fetchone()[0]
+
+    # Only a temporary test database is ever used
+    assert database.startswith("carelog_test_")
+
+    def get_test_connection():
+        return connect_to_test_postgres(database=database)
+
+    monkeypatch.setattr("carelog.services.visits.get_postgres_connection", get_test_connection)
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
+        ("Hilma", "Testi")
+    )
+    client_id = cursor.fetchone()[0]
+
+    cursor.execute(
+        "INSERT INTO services (name, default_hourly_rate) VALUES (%s, %s) RETURNING id",
+        ("Siivous", Decimal("35.00"))
+    )
+    service_id = cursor.fetchone()[0]
+
+    return cursor, client_id, service_id
+
+
+def get_saved_price(cursor, visit_id):
+    cursor.execute("SELECT price FROM visits WHERE id = %s", (visit_id,))
+    return cursor.fetchone()[0]
+
+
+def test_add_planned_visit_saves_service_default_rate(rate_database):
+    cursor, client_id, service_id = rate_database
+
+    visit_id = add_planned_visit(client_id, service_id, planned_date=date(2026, 11, 20))
+
+    assert get_saved_price(cursor, visit_id) == Decimal("35.00")
+    assert get_visit(visit_id)["price"] == Decimal("35.00")
+
+
+def test_given_rate_overrides_service_default_rate(rate_database):
+    cursor, client_id, service_id = rate_database
+
+    planned_id = add_planned_visit(
+        client_id, service_id, planned_date=date(2026, 11, 20), price=Decimal("40.00")
+    )
+    completed_id = add_completed_visit(
+        client_id, service_id, completed_date=date(2026, 11, 20), price=40
+    )
+
+    assert get_saved_price(cursor, planned_id) == Decimal("40.00")
+    assert get_saved_price(cursor, completed_id) == Decimal("40.00")
+
+
+def test_add_completed_visit_saves_service_default_rate(rate_database):
+    cursor, client_id, service_id = rate_database
+
+    visit_id = add_completed_visit(client_id, service_id, completed_date=date(2026, 11, 20))
+
+    assert get_saved_price(cursor, visit_id) == Decimal("35.00")
+
+
+def test_service_rate_change_does_not_change_saved_visits(rate_database):
+    cursor, client_id, service_id = rate_database
+
+    visit_a = add_planned_visit(client_id, service_id, planned_date=date(2026, 11, 20))
+    visit_b = add_planned_visit(
+        client_id, service_id, planned_date=date(2026, 11, 20), price=Decimal("40.00")
+    )
+
+    # The service gets a new default rate later
+    cursor.execute(
+        "UPDATE services SET default_hourly_rate = %s WHERE id = %s",
+        (Decimal("45.00"), service_id)
+    )
+
+    assert get_saved_price(cursor, visit_a) == Decimal("35.00")
+    assert get_saved_price(cursor, visit_b) == Decimal("40.00")
+
+    # A new visit gets the new default rate
+    visit_c = add_planned_visit(client_id, service_id, planned_date=date(2026, 11, 20))
+
+    assert get_saved_price(cursor, visit_c) == Decimal("45.00")
+
+
+def test_complete_visit_keeps_hourly_rate(rate_database):
+    cursor, client_id, service_id = rate_database
+
+    default_rate_id = add_planned_visit(client_id, service_id, planned_date=date(2026, 11, 20))
+    own_rate_id = add_planned_visit(
+        client_id, service_id, planned_date=date(2026, 11, 20), price=Decimal("40.00")
+    )
+
+    # The service rate changes before the visits are completed
+    cursor.execute("UPDATE services SET default_hourly_rate = 45 WHERE id = %s", (service_id,))
+
+    assert complete_visit(default_rate_id, duration_minutes=120) is True
+    assert complete_visit(own_rate_id, duration_minutes=180) is True
+
+    assert get_saved_price(cursor, default_rate_id) == Decimal("35.00")
+    assert get_saved_price(cursor, own_rate_id) == Decimal("40.00")
+
+
+def test_missing_default_rate_saves_no_price(rate_database):
+    cursor, client_id, service_id = rate_database
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
+        ("Ulkoilu",)
+    )
+    service_without_rate = cursor.fetchone()[0]
+
+    planned_id = add_planned_visit(client_id, service_without_rate, planned_date=date(2026, 11, 20))
+    completed_id = add_completed_visit(
+        client_id, service_without_rate, completed_date=date(2026, 11, 20)
+    )
+
+    # A missing rate stays missing; it is not saved as 0
+    assert get_saved_price(cursor, planned_id) is None
+    assert get_saved_price(cursor, completed_id) is None
+
+
+def test_zero_rate_is_not_a_missing_rate(rate_database):
+    cursor, client_id, service_id = rate_database
+
+    # A given rate of 0 is kept and the default 35.00 is not used
+    visit_id = add_planned_visit(client_id, service_id, planned_date=date(2026, 11, 20), price=0)
+
+    assert get_saved_price(cursor, visit_id) == Decimal("0.00")
+
+    # A default rate of 0 is copied as 0, not as a missing rate
+    cursor.execute(
+        "INSERT INTO services (name, default_hourly_rate) VALUES (%s, %s) RETURNING id",
+        ("Vapaaehtoinen apu", Decimal("0.00"))
+    )
+    free_service_id = cursor.fetchone()[0]
+
+    free_visit_id = add_completed_visit(
+        client_id, free_service_id, completed_date=date(2026, 11, 20)
+    )
+
+    assert get_saved_price(cursor, free_visit_id) == Decimal("0.00")
