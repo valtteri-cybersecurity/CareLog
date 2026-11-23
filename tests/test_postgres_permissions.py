@@ -29,6 +29,30 @@ SERVICE_MODULES = (
 )
 
 
+# Default privileges on new tables and sequences, as found in an earlier
+# local installation: carelog_app=arwd for tables and U for sequences.
+SCHEMA_DEFAULT_PRIVILEGES = [
+    "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public "
+    "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {}",
+    "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public "
+    "GRANT USAGE ON SEQUENCES TO {}",
+]
+
+GLOBAL_DEFAULT_PRIVILEGES = [
+    "ALTER DEFAULT PRIVILEGES FOR ROLE {} "
+    "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {}",
+    "ALTER DEFAULT PRIVILEGES FOR ROLE {} "
+    "GRANT USAGE ON SEQUENCES TO {}",
+]
+
+
+def get_table_owner(cursor):
+    # The test user creates the tables here, as carelog_migrator does in
+    # a real installation.
+    cursor.execute("SELECT current_user")
+    return cursor.fetchone()[0]
+
+
 @pytest.fixture
 def app_database(postgres_cursor, connect_to_test_postgres):
     # A temporary login account in the role of carelog_app. Accounts are
@@ -71,9 +95,25 @@ def app_database(postgres_cursor, connect_to_test_postgres):
         finally:
             # The privileges must be removed before the account can be dropped
             user = sql.Identifier(app_user)
+            owner = sql.Identifier(get_table_owner(postgres_cursor))
             postgres_cursor.execute(
                 sql.SQL("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {}").format(user)
             )
+            postgres_cursor.execute(
+                sql.SQL("REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM {}").format(user)
+            )
+
+            default_privileges = [
+                "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public "
+                "REVOKE ALL ON TABLES FROM {}",
+                "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public "
+                "REVOKE ALL ON SEQUENCES FROM {}",
+                "ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE ALL ON TABLES FROM {}",
+                "ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE ALL ON SEQUENCES FROM {}",
+            ]
+
+            for query in default_privileges:
+                postgres_cursor.execute(sql.SQL(query).format(owner, user))
             postgres_cursor.execute(
                 sql.SQL("REVOKE ALL ON SCHEMA public FROM {}").format(user)
             )
@@ -85,7 +125,7 @@ def app_database(postgres_cursor, connect_to_test_postgres):
 def test_grant_app_permissions_passes_check(app_database):
     cursor, app_user, connect_as_app = app_database
 
-    postgres_permissions.grant_app_permissions(cursor, app_user)
+    postgres_permissions.grant_app_permissions(cursor, app_user, get_table_owner(cursor))
     postgres_permissions.check_app_permissions(cursor, app_user)
 
     # The table privileges are exactly the listed ones
@@ -107,7 +147,7 @@ def test_grant_app_permissions_removes_old_privileges(app_database):
     cursor.execute(sql.SQL("GRANT ALL ON clients, schema_migrations TO {}").format(user))
     cursor.execute(sql.SQL("GRANT SELECT ON users TO {}").format(user))
 
-    postgres_permissions.grant_app_permissions(cursor, app_user)
+    postgres_permissions.grant_app_permissions(cursor, app_user, get_table_owner(cursor))
     postgres_permissions.check_app_permissions(cursor, app_user)
 
 
@@ -125,11 +165,71 @@ def test_grant_app_permissions_removes_old_privileges(app_database):
 def test_check_app_permissions_rejects_excessive_privileges(app_database, grant_sql, message):
     cursor, app_user, connect_as_app = app_database
 
-    postgres_permissions.grant_app_permissions(cursor, app_user)
+    postgres_permissions.grant_app_permissions(cursor, app_user, get_table_owner(cursor))
     cursor.execute(sql.SQL(grant_sql).format(sql.Identifier(app_user)))
 
     with pytest.raises(RuntimeError, match=message):
         postgres_permissions.check_app_permissions(cursor, app_user)
+
+
+@pytest.mark.parametrize(
+    ("default_sql", "message"),
+    [
+        (SCHEMA_DEFAULT_PRIVILEGES[0], "on new tables of .* in a schema"),
+        (SCHEMA_DEFAULT_PRIVILEGES[1], "USAGE on new sequences of .* in a schema"),
+        (GLOBAL_DEFAULT_PRIVILEGES[0], "on new tables of .* in all schemas"),
+        (GLOBAL_DEFAULT_PRIVILEGES[1], "USAGE on new sequences of .* in all schemas"),
+    ],
+)
+def test_check_app_permissions_rejects_default_privileges(app_database, default_sql, message):
+    cursor, app_user, connect_as_app = app_database
+    owner = sql.Identifier(get_table_owner(cursor))
+
+    postgres_permissions.grant_app_permissions(cursor, app_user, get_table_owner(cursor))
+    cursor.execute(sql.SQL(default_sql).format(owner, sql.Identifier(app_user)))
+
+    with pytest.raises(RuntimeError, match=message):
+        postgres_permissions.check_app_permissions(cursor, app_user)
+
+
+@pytest.mark.parametrize(
+    "default_sql_list",
+    [SCHEMA_DEFAULT_PRIVILEGES, GLOBAL_DEFAULT_PRIVILEGES],
+    ids=["schema", "global"],
+)
+def test_grant_app_permissions_removes_default_privileges(app_database, default_sql_list):
+    cursor, app_user, connect_as_app = app_database
+    owner_user = get_table_owner(cursor)
+    user = sql.Identifier(app_user)
+
+    for default_sql in default_sql_list:
+        cursor.execute(sql.SQL(default_sql).format(sql.Identifier(owner_user), user))
+
+    # Running the fix twice gives the same result
+    postgres_permissions.grant_app_permissions(cursor, app_user, owner_user)
+    postgres_permissions.grant_app_permissions(cursor, app_user, owner_user)
+    postgres_permissions.check_app_permissions(cursor, app_user)
+
+    # Tables and sequences created after the fix give no privileges
+    cursor.execute("CREATE TABLE extra_table (id INT)")
+    cursor.execute("CREATE SEQUENCE extra_sequence")
+
+    for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+        cursor.execute(
+            "SELECT has_table_privilege(%s, 'extra_table', %s)",
+            (app_user, privilege)
+        )
+        assert cursor.fetchone()[0] is False
+
+    for privilege in ("USAGE", "SELECT", "UPDATE"):
+        cursor.execute(
+            "SELECT has_sequence_privilege(%s, 'extra_sequence', %s)",
+            (app_user, privilege)
+        )
+        assert cursor.fetchone()[0] is False
+
+    # The new table and sequence do not break the check either
+    postgres_permissions.check_app_permissions(cursor, app_user)
 
 
 def test_check_app_permissions_rejects_missing_account(app_database):
@@ -141,7 +241,7 @@ def test_check_app_permissions_rejects_missing_account(app_database):
 
 def test_app_account_cannot_change_schema(app_database):
     cursor, app_user, connect_as_app = app_database
-    postgres_permissions.grant_app_permissions(cursor, app_user)
+    postgres_permissions.grant_app_permissions(cursor, app_user, get_table_owner(cursor))
 
     forbidden_sql = [
         "CREATE TABLE extra (id INT)",
@@ -172,7 +272,7 @@ def test_app_account_cannot_change_schema(app_database):
 
 def test_app_account_can_run_services(app_database, monkeypatch):
     cursor, app_user, connect_as_app = app_database
-    postgres_permissions.grant_app_permissions(cursor, app_user)
+    postgres_permissions.grant_app_permissions(cursor, app_user, get_table_owner(cursor))
 
     for module in SERVICE_MODULES:
         monkeypatch.setattr(f"{module}.get_postgres_connection", connect_as_app)
@@ -220,12 +320,27 @@ def test_apply_app_permissions(app_database, connect_to_test_postgres, monkeypat
     cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
+    owner_user = get_table_owner(cursor)
+
+    # A real installation uses carelog_migrator. Here the test user owns
+    # the tables, so it takes the place of the migration account.
+    assert postgres_permissions.MIGRATION_USER == "carelog_migrator"
+    monkeypatch.setattr(postgres_permissions, "MIGRATION_USER", owner_user)
+
     def get_test_connection(database=None, user=None, password=None):
-        assert user == "carelog_migrator"
+        assert user == owner_user
         assert password == "test-only"
         return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(postgres_permissions, "get_postgres_connection", get_test_connection)
+
+    # A default privilege that the fix must remove in the same transaction
+    cursor.execute(
+        sql.SQL(GLOBAL_DEFAULT_PRIVILEGES[0]).format(
+            sql.Identifier(owner_user),
+            sql.Identifier(app_user),
+        )
+    )
 
     with pytest.raises(ValueError):
         postgres_permissions.apply_app_permissions(app_user, database, password="")

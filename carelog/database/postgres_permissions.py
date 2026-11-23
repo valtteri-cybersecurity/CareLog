@@ -3,8 +3,11 @@ from psycopg import sql
 from carelog.database.postgres_connection import get_postgres_connection
 
 
-# Table privileges of the application account. These are the same as in
-# grant_app_permissions() of install.sh for MySQL. Keep them consistent.
+# The migration account creates and owns the CareLog tables.
+MIGRATION_USER = "carelog_migrator"
+
+# Table privileges of the application account. Grant only what the
+# repositories need.
 APP_TABLE_PRIVILEGES = {
     "clients": ("SELECT", "INSERT", "UPDATE"),
     "services": ("SELECT", "INSERT", "UPDATE"),
@@ -34,10 +37,11 @@ TABLE_PRIVILEGES = (
 COLUMN_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "REFERENCES")
 
 
-def grant_app_permissions(cursor, app_user):
-    # sql.Identifier quotes the account name safely. The privilege and
+def grant_app_permissions(cursor, app_user, owner_user):
+    # sql.Identifier quotes the account names safely. The privilege and
     # table names are fixed values from this file.
     user = sql.Identifier(app_user)
+    owner = sql.Identifier(owner_user)
 
     # Remove earlier privileges first, so that only the listed ones remain.
     # Revoking a table privilege also revokes its column privileges.
@@ -47,6 +51,22 @@ def grant_app_permissions(cursor, app_user):
     cursor.execute(
         sql.SQL("REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM {}").format(user)
     )
+
+    # Default privileges are given automatically to tables and sequences
+    # that owner_user creates later. The application gets no default
+    # privileges. A REVOKE IN SCHEMA public does not remove a default that
+    # was granted for all schemas, so both kinds are removed.
+    default_privileges = [
+        "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public "
+        "REVOKE ALL ON TABLES FROM {}",
+        "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public "
+        "REVOKE ALL ON SEQUENCES FROM {}",
+        "ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE ALL ON TABLES FROM {}",
+        "ALTER DEFAULT PRIVILEGES FOR ROLE {} REVOKE ALL ON SEQUENCES FROM {}",
+    ]
+
+    for query in default_privileges:
+        cursor.execute(sql.SQL(query).format(owner, user))
 
     for table, privileges in APP_TABLE_PRIVILEGES.items():
         query = sql.SQL("GRANT " + ", ".join(privileges) + " ON TABLE {} TO {}")
@@ -123,6 +143,40 @@ def check_app_permissions(cursor, app_user):
                 "Application account can create database objects. "
                 "Manual review required"
             )
+
+    # Default privileges of any account must not give the application
+    # privileges on tables (r) or sequences (S) created later. A row with
+    # no schema (defaclnamespace 0) applies to all schemas.
+    cursor.execute("""
+        SELECT r.rolname, d.defaclnamespace, d.defaclobjtype, a.privilege_type
+        FROM pg_default_acl AS d
+        JOIN pg_roles AS r
+          ON r.oid = d.defaclrole
+        CROSS JOIN LATERAL aclexplode(d.defaclacl) AS a
+        WHERE a.grantee = (SELECT oid FROM pg_roles WHERE rolname = %s)
+          AND d.defaclobjtype IN ('r', 'S')
+        ORDER BY r.rolname, d.defaclobjtype, a.privilege_type
+    """, (app_user,))
+
+    result = cursor.fetchone()
+
+    if result is not None:
+        owner, schema, object_type, privilege = result
+
+        if object_type == "r":
+            objects = "tables"
+        else:
+            objects = "sequences"
+
+        if schema == 0:
+            scope = "in all schemas"
+        else:
+            scope = "in a schema"
+
+        raise RuntimeError(
+            f"Application account has default privilege {privilege} on new "
+            f"{objects} of {owner} {scope}. Manual review required"
+        )
 
     # Every table in the schema, including schema_migrations, must have
     # exactly the listed privileges.
@@ -242,12 +296,12 @@ def apply_app_permissions(app_user, database=None, *, password):
         # revoke their privileges.
         connection = get_postgres_connection(
             database=database,
-            user="carelog_migrator",
+            user=MIGRATION_USER,
             password=password,
         )
 
         cursor = connection.cursor()
-        grant_app_permissions(cursor, app_user)
+        grant_app_permissions(cursor, app_user, MIGRATION_USER)
         check_app_permissions(cursor, app_user)
         connection.commit()
 

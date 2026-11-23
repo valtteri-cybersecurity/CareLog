@@ -5,347 +5,23 @@ umask 077
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
-DB_NAME="CareLog"
 PG_DB_NAME="carelog"
 DB_USER="carelog_app"
 MIGRATION_USER="carelog_migrator"
 PYTHON=".venv/bin/python"
-MIGRATION_USER_CREATED=0
-APP_PERMISSIONS_RESET=0
 
 fail() {
     echo "Error: $1" >&2
     exit 1
 }
 
-mysql_admin() {
-    sudo mysql --no-defaults --protocol=socket --user=root "$@"
-}
-
-drop_migration_user() {
-    if [ "$MIGRATION_USER_CREATED" -eq 1 ]; then
-        if ! mysql_admin -e "DROP USER '$MIGRATION_USER'@'localhost'"; then
-            return 1
-        fi
-        MIGRATION_USER_CREATED=0
-    fi
-}
-
-cleanup() {
-    status=$?
-    trap - EXIT
-    if [ "$APP_PERMISSIONS_RESET" -eq 1 ]; then
-        if ! grant_app_permissions; then
-            echo "WARNING: Could not restore all carelog_app permissions." >&2
-            if ! mysql_admin -e "ALTER USER '$DB_USER'@'localhost' ACCOUNT UNLOCK"; then
-                echo "CRITICAL: Could not unlock carelog_app. Manual review required." >&2
-            fi
-            status=1
-        fi
-    fi
-    if ! drop_migration_user; then
-        echo "CRITICAL: Could not remove carelog_migrator. Remove it manually." >&2
-        status=1
-    fi
-    exit "$status"
-}
-
-check_system() {
-    if [ "$EUID" -eq 0 ]; then
-        fail "Run as a regular user: bash install.sh"
-    fi
-    if ! command -v sudo >/dev/null 2>&1; then
-        fail "sudo is required"
-    fi
-    if ! command -v apt-get >/dev/null 2>&1; then
-        fail "Ubuntu or Linux Mint is required"
-    fi
-    if ! command -v systemctl >/dev/null 2>&1; then
-        fail "systemd is required"
-    fi
-    if [ ! -f requirements.txt ] || [ ! -f carelog/database/migrate.py ]; then
-        fail "Required CareLog files are missing"
-    fi
-    if [ -L .env ] || [ -L .venv ]; then
-        fail ".env and .venv must not be symbolic links"
-    fi
-    if [ -e .env ] && [ ! -f .env ]; then
-        fail ".env must be a regular file"
-    fi
-    if [ -f .env ] && [ ! -O .env ]; then
-        fail ".env must be owned by the current user"
-    fi
-    if [ -e .venv ] && [ ! -O .venv ]; then
-        fail ".venv must be owned by the current user"
-    fi
-    if command -v git >/dev/null 2>&1; then
-        if git ls-files --error-unmatch .env >/dev/null 2>&1; then
-            fail ".env is tracked by Git; remove it from version control first"
-        fi
-    fi
-    sudo -v
-}
-
-install_packages() {
-    echo "Installing system dependencies..."
-    sudo apt-get update
-    sudo apt-get install -y mysql-server python3 python3-venv python3-pip openssl
-    sudo systemctl enable --now mysql
-    mysql_admin -e "SELECT 1" >/dev/null
-}
-
-install_python() {
-    if [ ! -f "$PYTHON" ]; then
-        python3 -m venv .venv
-    fi
-    "$PYTHON" -m pip install -r requirements.txt
-}
-
-prepare_database() {
-    if [ ! -f .env ]; then
-        database_count="$(mysql_admin -N -s -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = '$DB_NAME'")"
-        user_count="$(mysql_admin -N -s -e "SELECT COUNT(*) FROM mysql.user WHERE user = '$DB_USER' AND host = 'localhost'")"
-        if [ "$database_count" -ne 0 ] || [ "$user_count" -ne 0 ]; then
-            fail "Database or application user exists without .env. Manual review required"
-        fi
-
-        app_password="Aa1!$(openssl rand -hex 32)"
-        mysql_admin <<SQL
-CREATE DATABASE \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER '$DB_USER'@'localhost' IDENTIFIED BY '$app_password';
-SQL
-        cat > .env <<ENV
-CARELOG_HOST=localhost
-CARELOG_DATABASE=$DB_NAME
-CARELOG_USER=$DB_USER
-CARELOG_PASSWORD=$app_password
-ENV
-        unset app_password
-        echo "Database and application account created."
-    fi
-
-    chmod 600 .env
-    "$PYTHON" - "$DB_NAME" "$DB_USER" <<'PYTHON'
-import sys
-
-from carelog.database.connection import load_config
-
-database, user = sys.argv[1:]
-config = load_config()
-if config["CARELOG_HOST"] != "localhost":
-    raise SystemExit("Invalid CARELOG_HOST in .env")
-if config["CARELOG_DATABASE"] != database or config["CARELOG_USER"] != user:
-    raise SystemExit("Invalid database or application user in .env")
-PYTHON
-}
-
-validate_app_connection() {
-    "$PYTHON" - "$DB_USER" <<'PYTHON'
-import sys
-
-from carelog.database.connection import get_connection
-
-user = sys.argv[1]
-with get_connection(database="") as connection, connection.cursor() as cursor:
-    cursor.execute("SELECT CURRENT_USER()")
-    if cursor.fetchone()[0] != user + "@localhost":
-        raise SystemExit("Connection does not use the expected local application account")
-PYTHON
-}
-
-create_database_if_missing() {
-    # .env and carelog_app may exist while the database itself was removed.
-    # Never touch an existing database; only create a missing one.
-    local database_count
-    database_count="$(mysql_admin -N -s -e "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = '$DB_NAME'")"
-    if [ "$database_count" -eq 0 ]; then
-        echo "Database $DB_NAME is missing; creating an empty database."
-        mysql_admin -e "CREATE DATABASE \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-    fi
-}
-
-check_schema() {
-    table_count="$(mysql_admin -N -s -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$DB_NAME'")"
-    history_count="$(mysql_admin -N -s -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$DB_NAME' AND table_name = 'schema_migrations'")"
-    if [ "$table_count" -gt 0 ] && [ "$history_count" -eq 0 ]; then
-        fail "Existing database has tables without migration history. Manual review required"
-    fi
-}
-
-check_app_permissions() {
-    local grants grant account permissions permission locked table_grants
-    table_grants=0
-    account="\`$DB_USER\`@\`localhost\`"
-    grants="$(mysql_admin -N -s -e "SHOW GRANTS FOR '$DB_USER'@'localhost'")"
-
-    # Reject global, database-wide, role and grant-option privileges.
-    # Only the eight application tables may have direct grants.
-    while IFS= read -r grant; do
-        case "$grant" in
-            "GRANT USAGE ON *.* TO $account") ;;
-            "GRANT "*" ON \`$DB_NAME\`.\`users\` TO $account" | \
-            "GRANT "*" ON \`$DB_NAME\`.\`clients\` TO $account" | \
-            "GRANT "*" ON \`$DB_NAME\`.\`services\` TO $account" | \
-            "GRANT "*" ON \`$DB_NAME\`.\`trips\` TO $account" | \
-            "GRANT "*" ON \`$DB_NAME\`.\`visits\` TO $account" | \
-            "GRANT "*" ON \`$DB_NAME\`.\`visit_notes\` TO $account" | \
-            "GRANT "*" ON \`$DB_NAME\`.\`expenses\` TO $account" | \
-            "GRANT "*" ON \`$DB_NAME\`.\`visit_trip_legs\` TO $account") table_grants=1 ;;
-            *) fail "Application account has unexpected grant: $grant. Manual review required" ;;
-        esac
-    done <<< "$grants"
-
-    # Verify individual privileges, not only the table scope in SHOW GRANTS.
-    # A partial set is valid; grant_app_permissions restores missing rights.
-    permissions="$(mysql_admin -N -s -e "
-SELECT CONCAT_WS('|', 'TABLE', TABLE_SCHEMA, TABLE_NAME, '-', PRIVILEGE_TYPE, IS_GRANTABLE)
-FROM information_schema.TABLE_PRIVILEGES
-WHERE GRANTEE = CONCAT(CHAR(39), '$DB_USER', CHAR(39), '@', CHAR(39), 'localhost', CHAR(39))
-UNION ALL
-SELECT CONCAT_WS('|', 'COLUMN', TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, PRIVILEGE_TYPE, IS_GRANTABLE)
-FROM information_schema.COLUMN_PRIVILEGES
-WHERE GRANTEE = CONCAT(CHAR(39), '$DB_USER', CHAR(39), '@', CHAR(39), 'localhost', CHAR(39))")"
-
-    if [ "$table_grants" -eq 1 ] && [ -z "$permissions" ]; then
-        fail "Cannot verify application table privileges. Manual review required"
-    fi
-
-    while IFS= read -r permission; do
-        if [ -z "$permission" ]; then
-            continue
-        fi
-        case "$permission" in
-            "TABLE|$DB_NAME|clients|-|SELECT|NO" | \
-            "TABLE|$DB_NAME|clients|-|INSERT|NO" | \
-            "TABLE|$DB_NAME|clients|-|UPDATE|NO" | \
-            "TABLE|$DB_NAME|services|-|SELECT|NO" | \
-            "TABLE|$DB_NAME|services|-|INSERT|NO" | \
-            "TABLE|$DB_NAME|services|-|UPDATE|NO" | \
-            "TABLE|$DB_NAME|trips|-|SELECT|NO" | \
-            "TABLE|$DB_NAME|trips|-|INSERT|NO" | \
-            "TABLE|$DB_NAME|trips|-|UPDATE|NO" | \
-            "TABLE|$DB_NAME|trips|-|DELETE|NO" | \
-            "TABLE|$DB_NAME|visits|-|SELECT|NO" | \
-            "TABLE|$DB_NAME|visits|-|INSERT|NO" | \
-            "TABLE|$DB_NAME|visits|-|UPDATE|NO" | \
-            "TABLE|$DB_NAME|visit_notes|-|SELECT|NO" | \
-            "TABLE|$DB_NAME|visit_notes|-|INSERT|NO" | \
-            "TABLE|$DB_NAME|visit_notes|-|UPDATE|NO" | \
-            "TABLE|$DB_NAME|visit_notes|-|DELETE|NO" | \
-            "TABLE|$DB_NAME|expenses|-|SELECT|NO" | \
-            "TABLE|$DB_NAME|expenses|-|INSERT|NO" | \
-            "TABLE|$DB_NAME|expenses|-|UPDATE|NO" | \
-            "TABLE|$DB_NAME|expenses|-|DELETE|NO" | \
-            "TABLE|$DB_NAME|visit_trip_legs|-|SELECT|NO" | \
-            "TABLE|$DB_NAME|visit_trip_legs|-|INSERT|NO" | \
-            "TABLE|$DB_NAME|visit_trip_legs|-|DELETE|NO" | \
-            "COLUMN|$DB_NAME|users|id|SELECT|NO" | \
-            "COLUMN|$DB_NAME|users|email|SELECT|NO" | \
-            "COLUMN|$DB_NAME|users|display_name|SELECT|NO" | \
-            "COLUMN|$DB_NAME|users|role|SELECT|NO" | \
-            "COLUMN|$DB_NAME|users|is_active|SELECT|NO") ;;
-            *) fail "Application account has excessive privilege: $permission. Manual review required" ;;
-        esac
-    done <<< "$permissions"
-
-    locked="$(mysql_admin -N -s -e "SELECT account_locked FROM mysql.user WHERE User = '$DB_USER' AND Host = 'localhost'")"
-    if [ "$locked" != "N" ] && [ "$locked" != "Y" ]; then
-        fail "Application account is missing. Manual review required"
-    fi
-    if [ "$locked" = "Y" ]; then
-        echo "Application account is locked; checking credentials before recovery."
-        # Unlock only after checking that its grants are restricted to CareLog.
-        mysql_admin -e "ALTER USER '$DB_USER'@'localhost' ACCOUNT UNLOCK"
-    fi
-}
-
-reset_app_permissions() {
-    mysql_admin -e "ALTER USER '$DB_USER'@'localhost' ACCOUNT LOCK"
-    APP_PERMISSIONS_RESET=1
-    local sessions
-    sessions="$(mysql_admin -N -s -e "SELECT COUNT(*) FROM information_schema.processlist WHERE USER = '$DB_USER'")"
-    if [ "$sessions" -ne 0 ]; then
-        fail "Stop the application and close its database sessions before retrying"
-    fi
-
-    mysql_admin -e "REVOKE ALL PRIVILEGES, GRANT OPTION FROM '$DB_USER'@'localhost'"
-}
-
-grant_app_permissions() {
-    mysql_admin <<SQL
-GRANT SELECT (id, email, display_name, role, is_active) ON \`$DB_NAME\`.users TO '$DB_USER'@'localhost';
-GRANT SELECT, INSERT, UPDATE ON \`$DB_NAME\`.clients TO '$DB_USER'@'localhost';
-GRANT SELECT, INSERT, UPDATE ON \`$DB_NAME\`.services TO '$DB_USER'@'localhost';
-GRANT SELECT, INSERT, UPDATE, DELETE ON \`$DB_NAME\`.trips TO '$DB_USER'@'localhost';
-GRANT SELECT, INSERT, UPDATE ON \`$DB_NAME\`.visits TO '$DB_USER'@'localhost';
-GRANT SELECT, INSERT, UPDATE, DELETE ON \`$DB_NAME\`.visit_notes TO '$DB_USER'@'localhost';
-GRANT SELECT, INSERT, UPDATE, DELETE ON \`$DB_NAME\`.expenses TO '$DB_USER'@'localhost';
-GRANT SELECT, INSERT, DELETE ON \`$DB_NAME\`.visit_trip_legs TO '$DB_USER'@'localhost';
-ALTER USER '$DB_USER'@'localhost' ACCOUNT UNLOCK;
-SQL
-    APP_PERMISSIONS_RESET=0
-}
-
-check_migration_user() {
-    local existing_count mandatory_roles
-    mandatory_roles="$(mysql_admin -N -s -e 'SELECT @@GLOBAL.mandatory_roles')"
-    if [ -n "$mandatory_roles" ]; then
-        fail "MySQL has mandatory roles. Review effective privileges before using this installer"
-    fi
-
-    existing_count="$(mysql_admin -N -s -e "SELECT COUNT(*) FROM mysql.user WHERE User = '$MIGRATION_USER' AND Host = 'localhost'")"
-    if [ "$existing_count" -ne 0 ]; then
-        fail "Migration account already exists. Inspect and remove it manually"
-    fi
-}
-
-run_migrations() {
-    local credentials migration_password
-    credentials="$(mysql_admin -N -B -r -e "CREATE USER '$MIGRATION_USER'@'localhost' IDENTIFIED BY RANDOM PASSWORD")"
-    MIGRATION_USER_CREATED=1
-    migration_password="$(cut -f3 <<< "$credentials")"
-    unset credentials
-    if [ "${#migration_password}" -lt 20 ]; then
-        fail "MySQL did not generate a migration password of at least 20 characters"
-    fi
-    mysql_admin -e "GRANT SELECT, INSERT, CREATE, REFERENCES, ALTER ON \`$DB_NAME\`.* TO '$MIGRATION_USER'@'localhost'"
-
-    reset_app_permissions
-    echo "Running database migrations with the dedicated migration account..."
-    printf '%s\n' "$migration_password" | "$PYTHON" -c '
-import sys
-from carelog.database.migrate import run_migrations
-
-password = sys.stdin.readline().rstrip("\n")
-run_migrations(password=password)
-'
-    unset migration_password
-    drop_migration_user
-    grant_app_permissions
-}
-
-main() {
-    check_system
-    install_packages
-    install_python
-    check_migration_user
-    prepare_database
-    check_schema
-    check_app_permissions
-    validate_app_connection
-    create_database_if_missing
-    run_migrations
-    echo "CareLog installation completed successfully."
-}
-
-# PostgreSQL installation (bash install.sh --postgres).
 # The PostgreSQL server, the carelog database and the carelog_app and
 # carelog_migrator accounts are created by the administrator beforehand,
 # for example in a Docker container. See README.md.
 
 check_system_postgres() {
     if [ "$EUID" -eq 0 ]; then
-        fail "Run as a regular user: bash install.sh --postgres"
+        fail "Run as a regular user: bash install.sh"
     fi
     if ! command -v python3 >/dev/null 2>&1; then
         fail "python3 is required"
@@ -429,24 +105,27 @@ apply_app_permissions(app_user, password=password)
     unset migration_password
 }
 
-main_postgres() {
+install_python() {
+    if [ ! -f "$PYTHON" ]; then
+        python3 -m venv .venv
+    fi
+    "$PYTHON" -m pip install -r requirements.txt
+}
+
+main() {
     check_system_postgres
     install_python
     prepare_postgres_config
     validate_postgres_app_connection
     run_postgres_migrations
-    echo "CareLog PostgreSQL installation completed successfully."
+    echo "CareLog installation completed successfully."
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-    trap cleanup EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    if [ "$#" -eq 0 ]; then
-        main
-    elif [ "$#" -eq 1 ] && [ "$1" = "--postgres" ]; then
-        main_postgres
-    else
-        fail "Usage: bash install.sh [--postgres]"
+    if [ "$#" -ne 0 ]; then
+        fail "Usage: bash install.sh"
     fi
+    main
 fi
