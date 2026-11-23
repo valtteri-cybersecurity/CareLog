@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-import pymysql
+import psycopg
 import pytest
 
 from carelog.services.trips import (
@@ -56,29 +56,29 @@ def test_add_trip_rejects_invalid_distance():
 
 
 def test_add_trip_saves_to_database(
-    cursor_with_trips,
-    connect_to_test_mysql,
+    postgres_cursor_with_trips,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_trips
+    cursor = postgres_cursor_with_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Testi", "Asiakas")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     trip_id = add_trip(
         client_id,
@@ -105,29 +105,29 @@ def test_add_trip_saves_to_database(
 
 
 def test_add_trip_saves_null_and_zero_distance(
-    cursor_with_trips,
-    connect_to_test_mysql,
+    postgres_cursor_with_trips,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_trips
+    cursor = postgres_cursor_with_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Testi", "Asiakas")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     trip_without_distance = add_trip(client_id, "Koti", "Apteekki")
     trip_with_zero_distance = add_trip(client_id, "Koti", "Naapuri", 0)
@@ -148,25 +148,25 @@ def test_add_trip_saves_null_and_zero_distance(
 
 
 def test_add_trip_rejects_missing_client(
-    cursor_with_trips,
-    connect_to_test_mysql,
+    postgres_cursor_with_trips,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_trips
+    cursor = postgres_cursor_with_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
     # The foreign key must reject a client that does not exist
-    with pytest.raises(pymysql.err.IntegrityError):
+    with pytest.raises(psycopg.IntegrityError):
         add_trip(999999, "Koti", "Kauppa")
 
     cursor.execute("SELECT COUNT(*) FROM trips")
@@ -175,17 +175,17 @@ def test_add_trip_rejects_missing_client(
 
 
 def test_add_trip_rolls_back_on_error(
-    cursor_with_trips,
-    connect_to_test_mysql,
+    postgres_cursor_with_trips,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_trips
+    cursor = postgres_cursor_with_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     def insert_then_fail(
         cursor,
@@ -205,7 +205,7 @@ def test_add_trip_rolls_back_on_error(
         raise RuntimeError("Simulated insert failure")
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
@@ -215,11 +215,11 @@ def test_add_trip_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Testi", "Asiakas")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     with pytest.raises(RuntimeError, match="Simulated insert failure"):
         add_trip(client_id, "Koti", "Kauppa")
@@ -267,7 +267,7 @@ def test_add_trip_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated insert failure")
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
@@ -298,39 +298,40 @@ def test_get_trip_rejects_boolean_id():
 
 
 def test_get_trip_returns_trip(
-    cursor_with_trips,
-    connect_to_test_mysql,
+    postgres_cursor_with_trips,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_trips
+    cursor = postgres_cursor_with_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Testi", "Asiakas")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
         INSERT INTO trips (client_id, start_location, destination, distance_km)
         VALUES (%s, %s, %s, %s)
+        RETURNING id
         """,
         (client_id, "Koti", "Kauppa", Decimal("12.50"))
     )
 
-    trip_id = cursor.lastrowid
+    trip_id = cursor.fetchone()[0]
 
     trip = get_trip(trip_id)
 
@@ -344,20 +345,20 @@ def test_get_trip_returns_trip(
 
 
 def test_get_trip_returns_none_if_not_found(
-    cursor_with_trips,
-    connect_to_test_mysql,
+    postgres_cursor_with_trips,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_trips
+    cursor = postgres_cursor_with_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
@@ -395,7 +396,7 @@ def test_get_trip_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
@@ -421,29 +422,29 @@ def test_get_trips_rejects_invalid_client_id():
 
 
 def test_get_trips_returns_empty_list(
-    cursor_with_trips,
-    connect_to_test_mysql,
+    postgres_cursor_with_trips,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_trips
+    cursor = postgres_cursor_with_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Testi", "Asiakas")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     trips = get_trips(client_id)
 
@@ -451,29 +452,29 @@ def test_get_trips_returns_empty_list(
 
 
 def test_get_trips_returns_sorted_trips(
-    cursor_with_trips,
-    connect_to_test_mysql,
+    postgres_cursor_with_trips,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_trips
+    cursor = postgres_cursor_with_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Testi", "Asiakas")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     trip_rows = (
         ("Koti", "Kauppa", Decimal("12.50")),
@@ -509,36 +510,36 @@ def test_get_trips_returns_sorted_trips(
 
 
 def test_get_trips_excludes_other_clients_trips(
-    cursor_with_trips,
-    connect_to_test_mysql,
+    postgres_cursor_with_trips,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_trips
+    cursor = postgres_cursor_with_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Testi", "Asiakas")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Toinen", "Asiakas")
     )
 
-    other_client_id = cursor.lastrowid
+    other_client_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
@@ -592,7 +593,7 @@ def test_get_trips_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
@@ -663,39 +664,40 @@ def test_update_trip_rejects_invalid_distance():
 
 
 def test_update_trip_changes_locations(
-    cursor_with_trips,
-    connect_to_test_mysql,
+    postgres_cursor_with_trips,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_trips
+    cursor = postgres_cursor_with_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Testi", "Asiakas")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
         INSERT INTO trips (client_id, start_location, destination, distance_km)
         VALUES (%s, %s, %s, %s)
+        RETURNING id
         """,
         (client_id, "Koti", "Kauppa", Decimal("12.50"))
     )
 
-    trip_id = cursor.lastrowid
+    trip_id = cursor.fetchone()[0]
 
     updated = update_trip(
         trip_id,
@@ -729,39 +731,40 @@ def test_update_trip_changes_locations(
 
 
 def test_update_trip_changes_and_clears_distance(
-    cursor_with_trips,
-    connect_to_test_mysql,
+    postgres_cursor_with_trips,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_trips
+    cursor = postgres_cursor_with_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Testi", "Asiakas")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
         INSERT INTO trips (client_id, start_location, destination)
         VALUES (%s, %s, %s)
+        RETURNING id
         """,
         (client_id, "Koti", "Kauppa")
     )
 
-    trip_id = cursor.lastrowid
+    trip_id = cursor.fetchone()[0]
 
     assert update_trip(trip_id, {"distance_km": 7.25}) is True
 
@@ -783,20 +786,20 @@ def test_update_trip_changes_and_clears_distance(
 
 
 def test_update_trip_returns_false_if_not_found(
-    cursor_with_trips,
-    connect_to_test_mysql,
+    postgres_cursor_with_trips,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_trips
+    cursor = postgres_cursor_with_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
@@ -809,17 +812,17 @@ def test_update_trip_returns_false_if_not_found(
 
 
 def test_update_trip_rolls_back_on_error(
-    cursor_with_trips,
-    connect_to_test_mysql,
+    postgres_cursor_with_trips,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_trips
+    cursor = postgres_cursor_with_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     def update_then_fail(cursor, trip_id, changes):
         cursor.execute(
@@ -834,7 +837,7 @@ def test_update_trip_rolls_back_on_error(
         raise RuntimeError("Simulated update failure")
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
@@ -844,21 +847,22 @@ def test_update_trip_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Testi", "Asiakas")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
         INSERT INTO trips (client_id, start_location, destination)
         VALUES (%s, %s, %s)
+        RETURNING id
         """,
         (client_id, "Koti", "Kauppa")
     )
 
-    trip_id = cursor.lastrowid
+    trip_id = cursor.fetchone()[0]
 
     with pytest.raises(RuntimeError, match="Simulated update failure"):
         update_trip(trip_id, {"destination": "Apteekki"})
@@ -903,7 +907,7 @@ def test_update_trip_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated update failure")
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
@@ -929,49 +933,51 @@ def test_delete_trip_rejects_invalid_id():
 
 
 def test_delete_trip_removes_only_given_trip(
-    cursor_with_trips,
-    connect_to_test_mysql,
+    postgres_cursor_with_trips,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_trips
+    cursor = postgres_cursor_with_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Testi", "Asiakas")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
         INSERT INTO trips (client_id, start_location, destination)
         VALUES (%s, %s, %s)
+        RETURNING id
         """,
         (client_id, "Koti", "Kauppa")
     )
 
-    trip_id = cursor.lastrowid
+    trip_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
         INSERT INTO trips (client_id, start_location, destination)
         VALUES (%s, %s, %s)
+        RETURNING id
         """,
         (client_id, "Koti", "Apteekki")
     )
 
-    other_trip_id = cursor.lastrowid
+    other_trip_id = cursor.fetchone()[0]
 
     deleted = delete_trip(trip_id)
 
@@ -980,7 +986,7 @@ def test_delete_trip_removes_only_given_trip(
     cursor.execute("SELECT id FROM trips")
 
     # Only the other trip is left
-    assert cursor.fetchall() == ((other_trip_id,),)
+    assert cursor.fetchall() == [(other_trip_id,)]
 
     cursor.execute(
         "SELECT COUNT(*) FROM clients WHERE id = %s",
@@ -992,20 +998,20 @@ def test_delete_trip_removes_only_given_trip(
 
 
 def test_delete_trip_returns_false_if_not_found(
-    cursor_with_trips,
-    connect_to_test_mysql,
+    postgres_cursor_with_trips,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_trips
+    cursor = postgres_cursor_with_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
@@ -1015,17 +1021,17 @@ def test_delete_trip_returns_false_if_not_found(
 
 
 def test_delete_trip_rolls_back_on_error(
-    cursor_with_trips,
-    connect_to_test_mysql,
+    postgres_cursor_with_trips,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_trips
+    cursor = postgres_cursor_with_trips
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     def delete_then_fail(cursor, trip_id):
         cursor.execute(
@@ -1036,7 +1042,7 @@ def test_delete_trip_rolls_back_on_error(
         raise RuntimeError("Simulated delete failure")
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
@@ -1046,21 +1052,22 @@ def test_delete_trip_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Testi", "Asiakas")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
         INSERT INTO trips (client_id, start_location, destination)
         VALUES (%s, %s, %s)
+        RETURNING id
         """,
         (client_id, "Koti", "Kauppa")
     )
 
-    trip_id = cursor.lastrowid
+    trip_id = cursor.fetchone()[0]
 
     with pytest.raises(RuntimeError, match="Simulated delete failure"):
         delete_trip(trip_id)
@@ -1105,7 +1112,7 @@ def test_delete_trip_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated delete failure")
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         get_test_connection
     )
 
@@ -1134,7 +1141,7 @@ def block_real_database(monkeypatch):
         raise RuntimeError("Unexpected database connection in a unit test")
 
     monkeypatch.setattr(
-        "carelog.services.trips.get_connection",
+        "carelog.services.trips.get_postgres_connection",
         connection_not_allowed
     )
 

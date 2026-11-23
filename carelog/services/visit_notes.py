@@ -1,4 +1,4 @@
-from carelog.database.connection import get_connection
+from carelog.database.postgres_connection import get_postgres_connection
 from carelog.database.repositories.insert_visit_note import insert_visit_note
 from carelog.database.repositories.select_visit_notes import select_visit_notes
 from carelog.database.repositories.update_visit_note import update_visit_note_record
@@ -47,7 +47,7 @@ def add_visit_note(visit_id: int, content: str) -> int:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         note_id = insert_visit_note(
@@ -91,7 +91,7 @@ def get_visit_notes(visit_id: int) -> list[dict]:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         notes = select_visit_notes(cursor, visit_id)
@@ -127,7 +127,7 @@ def update_visit_note(note_id: int, content: str) -> bool:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         updated = update_visit_note_record(

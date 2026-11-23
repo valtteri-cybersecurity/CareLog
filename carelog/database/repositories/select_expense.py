@@ -1,4 +1,4 @@
-from pymysql.cursors import Cursor
+from psycopg import Cursor
 
 
 def select_expense(cursor: Cursor, expense_id: int) -> dict | None:

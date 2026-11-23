@@ -1,10 +1,10 @@
 from datetime import date
 from decimal import Decimal
 
-import pymysql
+import psycopg
 import pytest
 
-from carelog.database.migrations import v004_trips
+from carelog.database.postgres_migrations import v004_trips
 from carelog.services.trips import (
     add_trip,
     delete_trip,
@@ -20,7 +20,7 @@ from carelog.services.visits import (
     complete_visit,
     get_visit,
 )
-from tests.migration_helpers import get_columns
+from tests.postgres_helpers import get_columns
 
 
 # The service modules used together in these tests. All of them must
@@ -48,47 +48,47 @@ def block_real_database(monkeypatch):
         raise RuntimeError("Unexpected database connection in a test")
 
     for module in SERVICE_MODULES:
-        monkeypatch.setattr(f"{module}.get_connection", connection_not_allowed)
+        monkeypatch.setattr(f"{module}.get_postgres_connection", connection_not_allowed)
 
 
 @pytest.fixture
-def integration_database(cursor_with_visit_trips, connect_to_test_mysql, monkeypatch):
-    cursor = cursor_with_visit_trips
+def integration_database(postgres_cursor_with_visit_trips, connect_to_test_postgres, monkeypatch):
+    cursor = postgres_cursor_with_visit_trips
 
     # The saved trips table is needed here as well
     v004_trips.upgrade(cursor)
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     # Only a temporary test database is ever used
     assert database.startswith("carelog_test_")
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     for module in SERVICE_MODULES:
-        monkeypatch.setattr(f"{module}.get_connection", get_test_connection)
+        monkeypatch.setattr(f"{module}.get_postgres_connection", get_test_connection)
 
     return cursor
 
 
 def create_client(cursor, first_name):
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         (first_name, "Testi")
     )
 
-    return cursor.lastrowid
+    return cursor.fetchone()[0]
 
 
 def create_service(cursor):
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    return cursor.lastrowid
+    return cursor.fetchone()[0]
 
 
 def get_saved_legs(cursor, visit_id):
@@ -169,9 +169,9 @@ def test_changing_or_deleting_default_route_keeps_history(integration_database):
     assert delete_trip(trip_id) is True
 
     assert get_trip(trip_id) is None
-    assert get_saved_legs(cursor, visit_id) == (
+    assert get_saved_legs(cursor, visit_id) == [
         (1, "Hilman koti", "Ruokakauppa", Decimal("3.20")),
-    )
+    ]
     assert get_visit(visit_id)["distance_km"] == Decimal("3.20")
 
 
@@ -328,11 +328,11 @@ def test_replacing_trip_does_not_touch_other_clients(integration_database):
     )
 
     # Exactly the new legs, numbered from 1 again
-    assert get_saved_legs(cursor, hilma_visit_id) == (
+    assert get_saved_legs(cursor, hilma_visit_id) == [
         (1, "Koti", "Kauppa", Decimal("3.00")),
         (2, "Kauppa", "Apteekki", Decimal("2.00")),
         (3, "Apteekki", "Koti", Decimal("4.00")),
-    )
+    ]
     assert get_visit(hilma_visit_id)["distance_km"] == Decimal("9")
 
     # Aino's visit is not touched
@@ -361,11 +361,11 @@ def test_unknown_distance_is_completed_later(integration_database):
     save_visit_trip(visit_id, legs_with_gap)
 
     # All legs are saved, the gap stays NULL and no partial total is saved
-    assert get_saved_legs(cursor, visit_id) == (
+    assert get_saved_legs(cursor, visit_id) == [
         (1, "Koti", "Kauppa", Decimal("3.20")),
         (2, "Kauppa", "Apteekki", None),
         (3, "Apteekki", "Koti", Decimal("4.10")),
-    )
+    ]
     assert get_visit(visit_id)["distance_km"] is None
 
     # The missing distance is filled in later
@@ -461,7 +461,7 @@ def test_failure_after_all_legs_rolls_back_everything(
     legs_before = get_saved_legs(cursor, visit_id)
     visit_before = get_visit(visit_id)
 
-    # A real MySQL error at the very last step: the old legs are already
+    # A real database error at the very last step: the old legs are already
     # deleted and all new legs inserted when the total is updated.
     # (tests/test_visit_trips.py covers a failure in the middle of the
     # inserts.)
@@ -483,7 +483,7 @@ def test_failure_after_all_legs_rolls_back_everything(
         {"start_location": "Koti", "destination": "Naapuri", "distance_km": Decimal("0.20")},
     ]
 
-    with pytest.raises(pymysql.MySQLError):
+    with pytest.raises(psycopg.Error):
         save_visit_trip(visit_id, new_legs)
 
     # The old legs, the old total and the rest of the visit are as before,

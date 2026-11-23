@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from pymysql.cursors import Cursor
+from psycopg import Cursor
 
 
 def complete_visit_record(

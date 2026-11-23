@@ -1,4 +1,4 @@
-from pymysql.cursors import Cursor
+from psycopg import Cursor
 
 
 def select_visit_trip_legs(cursor: Cursor, visit_id: int) -> list[dict]:

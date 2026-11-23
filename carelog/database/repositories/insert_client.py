@@ -1,4 +1,4 @@
-from pymysql.cursors import Cursor
+from psycopg import Cursor
 
 
 def insert_client(
@@ -17,8 +17,10 @@ def insert_client(
         """
         INSERT INTO clients (first_name, last_name, phone, email, street_address, postal_code, city, distance_from_home_km)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
         """,
         (first_name, last_name, phone, email, street_address, postal_code, city, distance_from_home_km)
     )
 
-    return cursor.lastrowid
+    # RETURNING id gives the id that PostgreSQL created for the row.
+    return cursor.fetchone()[0]

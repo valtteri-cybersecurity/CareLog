@@ -1,4 +1,4 @@
-from carelog.database.connection import get_connection
+from carelog.database.postgres_connection import get_postgres_connection
 from carelog.database.repositories.delete_visit_trip_legs import delete_visit_trip_legs
 from carelog.database.repositories.insert_visit_trip_leg import insert_visit_trip_leg
 from carelog.database.repositories.select_visit_status_for_update import (
@@ -41,7 +41,7 @@ def save_visit_trip(visit_id: int, legs: list[dict]) -> bool:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         # The visit is locked, so two saves for the same visit cannot mix.
@@ -106,7 +106,7 @@ def get_visit_trip(visit_id: int) -> list[dict]:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         legs = select_visit_trip_legs(cursor, visit_id)

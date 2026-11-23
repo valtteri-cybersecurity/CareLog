@@ -72,20 +72,20 @@ def test_add_service_rejects_rate_over_limit():
 
 
 def test_add_service_saves_to_database(
-    cursor_with_clients_and_services,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients_and_services,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients_and_services
+    cursor = postgres_cursor_with_clients_and_services
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.services.get_connection",
+        "carelog.services.services.get_postgres_connection",
         get_test_connection
     )
 
@@ -114,20 +114,20 @@ def test_add_service_saves_to_database(
 
 
 def test_add_service_saves_null_values(
-    cursor_with_clients_and_services,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients_and_services,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients_and_services
+    cursor = postgres_cursor_with_clients_and_services
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.services.get_connection",
+        "carelog.services.services.get_postgres_connection",
         get_test_connection
     )
 
@@ -146,17 +146,17 @@ def test_add_service_saves_null_values(
 
 
 def test_add_service_rolls_back_on_error(
-    cursor_with_clients_and_services,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients_and_services,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients_and_services
+    cursor = postgres_cursor_with_clients_and_services
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     def insert_then_fail(
         cursor,
@@ -172,7 +172,7 @@ def test_add_service_rolls_back_on_error(
         raise RuntimeError("Simulated insert failure")
 
     monkeypatch.setattr(
-        "carelog.services.services.get_connection",
+        "carelog.services.services.get_postgres_connection",
         get_test_connection
     )
 
@@ -222,20 +222,20 @@ def test_get_service_rejects_negative_id():
 
 
 def test_get_service_returns_service(
-    cursor_with_clients_and_services,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients_and_services,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients_and_services
+    cursor = postgres_cursor_with_clients_and_services
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.services.get_connection",
+        "carelog.services.services.get_postgres_connection",
         get_test_connection
     )
 
@@ -247,11 +247,12 @@ def test_get_service_returns_service(
             default_hourly_rate
         )
         VALUES (%s, %s, %s)
+        RETURNING id
         """,
         ("Kaupassa käynti", "Asiointiapu", Decimal("35.50"))
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     service = get_service(service_id)
 
@@ -263,20 +264,20 @@ def test_get_service_returns_service(
 
 
 def test_get_service_returns_none_if_not_found(
-    cursor_with_clients_and_services,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients_and_services,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients_and_services
+    cursor = postgres_cursor_with_clients_and_services
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.services.get_connection",
+        "carelog.services.services.get_postgres_connection",
         get_test_connection
     )
 
@@ -314,7 +315,7 @@ def test_get_service_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.services.get_connection",
+        "carelog.services.services.get_postgres_connection",
         get_test_connection
     )
 
@@ -335,20 +336,20 @@ def test_get_service_closes_connection_on_error(monkeypatch):
 
 
 def test_get_services_returns_empty_list(
-    cursor_with_clients_and_services,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients_and_services,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients_and_services
+    cursor = postgres_cursor_with_clients_and_services
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.services.get_connection",
+        "carelog.services.services.get_postgres_connection",
         get_test_connection
     )
 
@@ -358,20 +359,20 @@ def test_get_services_returns_empty_list(
 
 
 def test_get_services_returns_sorted_services(
-    cursor_with_clients_and_services,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients_and_services,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients_and_services
+    cursor = postgres_cursor_with_clients_and_services
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.services.get_connection",
+        "carelog.services.services.get_postgres_connection",
         get_test_connection
     )
 
@@ -456,7 +457,7 @@ def test_get_services_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.services.get_connection",
+        "carelog.services.services.get_postgres_connection",
         get_test_connection
     )
 
@@ -512,20 +513,20 @@ def test_update_service_rejects_negative_rate():
 
 
 def test_update_service_changes_name_and_rate(
-    cursor_with_clients_and_services,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients_and_services,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients_and_services
+    cursor = postgres_cursor_with_clients_and_services
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.services.get_connection",
+        "carelog.services.services.get_postgres_connection",
         get_test_connection
     )
 
@@ -537,11 +538,12 @@ def test_update_service_changes_name_and_rate(
             default_hourly_rate
         )
         VALUES (%s, %s, %s)
+        RETURNING id
         """,
         ("Kaupassa käynti", "Asiointiapu", Decimal("35.50"))
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     updated = update_service(
         service_id,
@@ -571,20 +573,20 @@ def test_update_service_changes_name_and_rate(
 
 
 def test_update_service_clears_description_and_rate(
-    cursor_with_clients_and_services,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients_and_services,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients_and_services
+    cursor = postgres_cursor_with_clients_and_services
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.services.get_connection",
+        "carelog.services.services.get_postgres_connection",
         get_test_connection
     )
 
@@ -596,11 +598,12 @@ def test_update_service_clears_description_and_rate(
             default_hourly_rate
         )
         VALUES (%s, %s, %s)
+        RETURNING id
         """,
         ("Kaupassa käynti", "Asiointiapu", Decimal("35.50"))
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     updated = update_service(
         service_id,
@@ -625,20 +628,20 @@ def test_update_service_clears_description_and_rate(
 
 
 def test_update_service_returns_false_if_not_found(
-    cursor_with_clients_and_services,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients_and_services,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients_and_services
+    cursor = postgres_cursor_with_clients_and_services
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.services.get_connection",
+        "carelog.services.services.get_postgres_connection",
         get_test_connection
     )
 
@@ -651,17 +654,17 @@ def test_update_service_returns_false_if_not_found(
 
 
 def test_update_service_rolls_back_on_error(
-    cursor_with_clients_and_services,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients_and_services,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients_and_services
+    cursor = postgres_cursor_with_clients_and_services
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     def update_then_fail(cursor, service_id, changes):
         cursor.execute(
@@ -676,7 +679,7 @@ def test_update_service_rolls_back_on_error(
         raise RuntimeError("Simulated update failure")
 
     monkeypatch.setattr(
-        "carelog.services.services.get_connection",
+        "carelog.services.services.get_postgres_connection",
         get_test_connection
     )
 
@@ -686,11 +689,11 @@ def test_update_service_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kaupassa käynti",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     with pytest.raises(RuntimeError, match="Simulated update failure"):
         update_service(service_id, {"name": "Ulkoilu"})
@@ -735,7 +738,7 @@ def test_update_service_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated update failure")
 
     monkeypatch.setattr(
-        "carelog.services.services.get_connection",
+        "carelog.services.services.get_postgres_connection",
         get_test_connection
     )
 

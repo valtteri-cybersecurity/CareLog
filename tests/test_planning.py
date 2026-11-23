@@ -20,7 +20,7 @@ def block_real_database(monkeypatch):
         raise RuntimeError("Unexpected database connection in a unit test")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         connection_not_allowed
     )
 

@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from carelog.database.connection import get_connection
+from carelog.database.postgres_connection import get_postgres_connection
 from carelog.database.repositories.insert_expense import insert_expense
 from carelog.database.repositories.select_expense import select_expense
 from carelog.database.repositories.select_expenses import select_expenses
@@ -153,7 +153,7 @@ def add_expense(
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         expense_id = insert_expense(
@@ -200,7 +200,7 @@ def get_expense(expense_id: int) -> dict | None:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         expense = select_expense(cursor, expense_id)
@@ -233,7 +233,7 @@ def get_visit_expenses(visit_id: int) -> list[dict]:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         expenses = select_visit_expenses(cursor, visit_id)
@@ -293,7 +293,7 @@ def get_expenses(
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         expenses = select_expenses(
@@ -361,7 +361,7 @@ def update_expense(expense_id: int, changes: dict) -> bool:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         # The row is locked, so the check below uses current data.

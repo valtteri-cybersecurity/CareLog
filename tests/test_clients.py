@@ -65,20 +65,20 @@ def test_add_client_rejects_spaces_phone():
 
 
 def test_add_client_saves_to_database(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -100,17 +100,17 @@ def test_add_client_saves_to_database(
 
 
 def test_add_client_rolls_back_on_insert_error(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     def insert_then_fail(
         cursor,
@@ -140,7 +140,7 @@ def test_add_client_rolls_back_on_insert_error(
         raise RuntimeError("Simulated insert failure")
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -165,20 +165,20 @@ def test_add_client_rolls_back_on_insert_error(
 
 
 def test_add_client_strips_whitespace(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -197,20 +197,20 @@ def test_add_client_strips_whitespace(
 
 
 def test_add_client_saves_phone(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -233,20 +233,20 @@ def test_add_client_saves_phone(
 
 
 def test_add_client_saves_null_phone(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -265,20 +265,20 @@ def test_add_client_saves_null_phone(
 
 
 def test_add_client_saves_empty_phone_as_null(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -315,20 +315,20 @@ def test_add_client_rejects_spaces_email():
 
 
 def test_add_client_saves_email(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -351,20 +351,20 @@ def test_add_client_saves_email(
 
 
 def test_add_client_saves_null_email(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -383,20 +383,20 @@ def test_add_client_saves_null_email(
 
 
 def test_add_client_saves_empty_email_as_null(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -461,20 +461,20 @@ def test_add_client_rejects_spaces_street_address():
 
 
 def test_add_client_saves_street_address(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -558,20 +558,20 @@ def test_add_client_rejects_over_limit_distance():
 
 
 def test_add_client_saves_null_street_address(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -586,20 +586,20 @@ def test_add_client_saves_null_street_address(
 
 
 def test_add_client_saves_empty_street_address_as_null(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -617,20 +617,20 @@ def test_add_client_saves_empty_street_address_as_null(
 
 
 def test_add_client_saves_postal_code(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -645,20 +645,20 @@ def test_add_client_saves_postal_code(
 
 
 def test_add_client_saves_null_postal_code(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -673,20 +673,20 @@ def test_add_client_saves_null_postal_code(
 
 
 def test_add_client_saves_empty_postal_code_as_null(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -704,20 +704,20 @@ def test_add_client_saves_empty_postal_code_as_null(
 
 
 def test_add_client_saves_city(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -732,20 +732,20 @@ def test_add_client_saves_city(
 
 
 def test_add_client_saves_null_city(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -760,20 +760,20 @@ def test_add_client_saves_null_city(
 
 
 def test_add_client_saves_empty_city_as_null(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -791,20 +791,20 @@ def test_add_client_saves_empty_city_as_null(
 
 
 def test_add_client_saves_distance(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -821,20 +821,20 @@ def test_add_client_saves_distance(
 
 
 def test_add_client_saves_null_distance(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -877,20 +877,20 @@ def test_get_client_rejects_negative_id():
 
 
 def test_get_client_returns_client(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -898,11 +898,12 @@ def test_get_client_returns_client(
         """
         INSERT INTO clients (first_name, last_name, city)
         VALUES (%s, %s, %s)
+        RETURNING id
         """,
         ("Hilma", "Virtanen", "Tampere")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     client = get_client(client_id)
 
@@ -914,20 +915,20 @@ def test_get_client_returns_client(
 
 
 def test_get_client_returns_none_if_not_found(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -937,19 +938,19 @@ def test_get_client_returns_none_if_not_found(
 
 
 def test_get_client_closes_connection_on_error(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     connections = []
 
     def get_test_connection():
-        connection = connect_to_test_mysql(database=database)
+        connection = connect_to_test_postgres(database=database)
         connections.append(connection)
         return connection
 
@@ -957,7 +958,7 @@ def test_get_client_closes_connection_on_error(
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -969,24 +970,24 @@ def test_get_client_closes_connection_on_error(
     with pytest.raises(RuntimeError, match="Simulated select failure"):
         get_client(1)
 
-    assert connections[0].open is False
+    assert connections[0].closed is True
 
 
 def test_get_clients_returns_empty_list(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -996,20 +997,20 @@ def test_get_clients_returns_empty_list(
 
 
 def test_get_clients_returns_clients_in_name_order(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -1033,20 +1034,20 @@ def test_get_clients_returns_clients_in_name_order(
 
 
 def test_get_clients_excludes_archived_clients(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -1100,7 +1101,7 @@ def test_get_clients_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -1156,20 +1157,20 @@ def test_update_client_rejects_invalid_distance():
 
 
 def test_update_client_changes_city(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -1177,11 +1178,12 @@ def test_update_client_changes_city(
         """
         INSERT INTO clients (first_name, last_name, city)
         VALUES (%s, %s, %s)
+        RETURNING id
         """,
         ("Hilma", "Virtanen", "Tampere")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     updated = update_client(
         client_id,
@@ -1207,20 +1209,20 @@ def test_update_client_changes_city(
 
 
 def test_update_client_clears_phone(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -1228,11 +1230,12 @@ def test_update_client_clears_phone(
         """
         INSERT INTO clients (first_name, last_name, phone)
         VALUES (%s, %s, %s)
+        RETURNING id
         """,
         ("Hilma", "Virtanen", "0401234567")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     updated = update_client(
         client_id,
@@ -1254,20 +1257,20 @@ def test_update_client_clears_phone(
 
 
 def test_update_client_returns_false_if_not_found(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -1280,20 +1283,20 @@ def test_update_client_returns_false_if_not_found(
 
 
 def test_update_client_rejects_archived_client(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -1305,11 +1308,12 @@ def test_update_client_rejects_archived_client(
             archived_at
         )
         VALUES (%s, %s, NOW())
+        RETURNING id
         """,
         ("Hilma", "Virtanen")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     updated = update_client(
         client_id,
@@ -1320,17 +1324,17 @@ def test_update_client_rejects_archived_client(
 
 
 def test_update_client_rolls_back_on_error(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     def update_then_fail(cursor, client_id, changes):
         cursor.execute(
@@ -1345,7 +1349,7 @@ def test_update_client_rolls_back_on_error(
         raise RuntimeError("Simulated update failure")
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -1358,11 +1362,12 @@ def test_update_client_rolls_back_on_error(
         """
         INSERT INTO clients (first_name, last_name, city)
         VALUES (%s, %s, %s)
+        RETURNING id
         """,
         ("Hilma", "Virtanen", "Tampere")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     with pytest.raises(RuntimeError, match="Simulated update failure"):
         update_client(client_id, {"city": "Helsinki"})
@@ -1408,20 +1413,20 @@ def test_archive_client_rejects_negative_id():
 
 
 def test_archive_client_sets_archived_at(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -1429,11 +1434,12 @@ def test_archive_client_sets_archived_at(
         """
         INSERT INTO clients (first_name, last_name)
         VALUES (%s, %s)
+        RETURNING id
         """,
         ("Hilma", "Virtanen")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     archived = archive_client(client_id)
 
@@ -1456,20 +1462,20 @@ def test_archive_client_sets_archived_at(
 
 
 def test_archive_client_returns_false_if_not_found(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -1479,20 +1485,20 @@ def test_archive_client_returns_false_if_not_found(
 
 
 def test_archive_client_returns_false_if_already_archived(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -1500,11 +1506,12 @@ def test_archive_client_returns_false_if_already_archived(
         """
         INSERT INTO clients (first_name, last_name)
         VALUES (%s, %s)
+        RETURNING id
         """,
         ("Hilma", "Virtanen")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     first_result = archive_client(client_id)
 
@@ -1538,23 +1545,23 @@ def test_archive_client_returns_false_if_already_archived(
 
 
 def test_archive_client_rolls_back_on_error(
-    cursor_with_clients,
-    connect_to_test_mysql,
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_clients
+    cursor = postgres_cursor_with_clients
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     def archive_then_fail(cursor, client_id):
         cursor.execute(
             """
             UPDATE clients
-            SET archived_at = UTC_TIMESTAMP()
+            SET archived_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC'
             WHERE id = %s
             """,
             (client_id,)
@@ -1563,7 +1570,7 @@ def test_archive_client_rolls_back_on_error(
         raise RuntimeError("Simulated archive failure")
 
     monkeypatch.setattr(
-        "carelog.services.clients.get_connection",
+        "carelog.services.clients.get_postgres_connection",
         get_test_connection
     )
 
@@ -1576,11 +1583,12 @@ def test_archive_client_rolls_back_on_error(
         """
         INSERT INTO clients (first_name, last_name)
         VALUES (%s, %s)
+        RETURNING id
         """,
         ("Hilma", "Virtanen")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     with pytest.raises(
         RuntimeError,

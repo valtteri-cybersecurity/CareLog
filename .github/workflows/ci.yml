@@ -16,11 +16,11 @@ permissions:
 
 jobs:
   pytest:
-    name: Python 3.12 / MySQL 8.4
+    name: Python 3.12 / MySQL 8.4 / PostgreSQL 16
     runs-on: ubuntu-24.04
     timeout-minutes: 15
 
-    # Fresh, disposable database: never connects to a user's own MySQL server.
+    # Fresh, disposable databases: never connects to a user's own database server.
     services:
       mysql:
         image: mysql:8.4
@@ -35,12 +35,28 @@ jobs:
           --health-timeout=5s
           --health-retries=10
 
-    # Credentials are only for the disposable CI database.
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: carelog-ci-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    # Credentials are only for the disposable CI databases.
     env:
       CARELOG_TEST_MYSQL_HOST: 127.0.0.1
       CARELOG_TEST_MYSQL_PORT: "3306"
       CARELOG_TEST_MYSQL_USER: root
       CARELOG_TEST_MYSQL_PASSWORD: carelog-ci-only-password
+      CARELOG_TEST_PG_HOST: 127.0.0.1
+      CARELOG_TEST_PG_PORT: "5432"
+      CARELOG_TEST_PG_USER: postgres
+      CARELOG_TEST_PG_PASSWORD: carelog-ci-only-password
 
     steps:
       - name: Check out repository

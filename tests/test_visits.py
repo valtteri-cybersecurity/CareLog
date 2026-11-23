@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-import pymysql
+import psycopg
 import pytest
 
 from carelog.services.visits import (
@@ -93,36 +93,36 @@ def test_add_planned_visit_rejects_invalid_schedule():
 
 
 def test_add_planned_visit_saves_week_only(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
         client_id,
@@ -170,36 +170,36 @@ def test_add_planned_visit_saves_week_only(
 
 
 def test_add_planned_visit_saves_date_without_time(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
         client_id,
@@ -230,36 +230,36 @@ def test_add_planned_visit_saves_date_without_time(
 
 
 def test_add_planned_visit_saves_exact_time_in_utc(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     # 25.11.2026 at 10.00 in Helsinki is 08.00 UTC
     visit_id = add_planned_visit(
@@ -304,36 +304,36 @@ def test_add_planned_visit_saves_exact_time_in_utc(
 
 
 def test_add_planned_visit_saves_null_duration(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
         client_id,
@@ -356,39 +356,40 @@ def test_add_planned_visit_saves_null_duration(
 
 
 def test_add_planned_visit_rejects_missing_or_archived_client(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
         """
         INSERT INTO clients (first_name, last_name, archived_at)
-        VALUES (%s, %s, UTC_TIMESTAMP())
+        VALUES (%s, %s, CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+        RETURNING id
         """,
         ("Arkistoitu", "Asiakas")
     )
 
-    archived_client_id = cursor.lastrowid
+    archived_client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     with pytest.raises(ValueError, match="archived"):
         add_planned_visit(
@@ -410,17 +411,17 @@ def test_add_planned_visit_rejects_missing_or_archived_client(
 
 
 def test_add_planned_visit_rolls_back_on_error(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     def insert_then_fail(
         cursor,
@@ -442,7 +443,7 @@ def test_add_planned_visit_rolls_back_on_error(
         raise RuntimeError("Simulated insert failure")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -452,18 +453,18 @@ def test_add_planned_visit_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     with pytest.raises(RuntimeError, match="Simulated insert failure"):
         add_planned_visit(
@@ -510,7 +511,7 @@ def test_add_planned_visit_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -646,36 +647,36 @@ def test_add_completed_visit_rejects_invalid_distance_and_price():
 
 
 def test_add_completed_visit_saves_date_only(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_id = add_completed_visit(
         client_id,
@@ -722,36 +723,36 @@ def test_add_completed_visit_saves_date_only(
 
 
 def test_add_completed_visit_saves_date_and_duration(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_id = add_completed_visit(
         client_id,
@@ -786,36 +787,36 @@ def test_add_completed_visit_saves_date_and_duration(
 
 
 def test_add_completed_visit_saves_exact_times_in_utc(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     # Seconds are dropped, so 10.00–11.30 is exactly 90 minutes
     visit_id = add_completed_visit(
@@ -848,39 +849,40 @@ def test_add_completed_visit_saves_exact_times_in_utc(
 
 
 def test_add_completed_visit_rejects_archived_client(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
         """
         INSERT INTO clients (first_name, last_name, archived_at)
-        VALUES (%s, %s, UTC_TIMESTAMP())
+        VALUES (%s, %s, CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+        RETURNING id
         """,
         ("Arkistoitu", "Asiakas")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     with pytest.raises(ValueError, match="archived"):
         add_completed_visit(
@@ -895,17 +897,17 @@ def test_add_completed_visit_rejects_archived_client(
 
 
 def test_add_completed_visit_rolls_back_on_error(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     def insert_then_fail(
         cursor,
@@ -932,7 +934,7 @@ def test_add_completed_visit_rolls_back_on_error(
         raise RuntimeError("Simulated insert failure")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -942,18 +944,18 @@ def test_add_completed_visit_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     with pytest.raises(RuntimeError, match="Simulated insert failure"):
         add_completed_visit(
@@ -1000,7 +1002,7 @@ def test_add_completed_visit_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -1032,36 +1034,36 @@ def test_get_visit_rejects_boolean_id():
 
 
 def test_get_visit_returns_planned_visit(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
         client_id,
@@ -1120,36 +1122,36 @@ def test_get_visit_returns_planned_visit(
 
 
 def test_get_visit_returns_completed_visit(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_id = add_completed_visit(
         client_id,
@@ -1178,20 +1180,20 @@ def test_get_visit_returns_completed_visit(
 
 
 def test_get_visit_returns_none_if_not_found(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -1229,7 +1231,7 @@ def test_get_visit_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -1255,29 +1257,29 @@ def test_get_client_visits_rejects_invalid_client_id():
 
 
 def test_get_client_visits_returns_empty_list(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     visits = get_client_visits(client_id)
 
@@ -1285,36 +1287,36 @@ def test_get_client_visits_returns_empty_list(
 
 
 def test_get_client_visits_returns_all_statuses_newest_first(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     # Inserted in mixed order: status, planned week, planned date,
     # completed date and planned duration
@@ -1364,43 +1366,43 @@ def test_get_client_visits_returns_all_statuses_newest_first(
 
 
 def test_get_client_visits_excludes_other_clients_visits(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Toinen", "Asiakas")
     )
 
-    other_client_id = cursor.lastrowid
+    other_client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     for visit_client_id in (client_id, other_client_id, other_client_id):
         cursor.execute(
@@ -1418,50 +1420,51 @@ def test_get_client_visits_excludes_other_clients_visits(
 
 
 def test_get_client_visits_returns_archived_client_visits(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
         INSERT INTO visits (client_id, service_id, status, completed_date)
         VALUES (%s, %s, %s, %s)
+        RETURNING id
         """,
         (client_id, service_id, "completed", date(2026, 11, 18))
     )
 
-    visit_id = cursor.lastrowid
+    visit_id = cursor.fetchone()[0]
 
     # The client is archived after the visit
     cursor.execute(
-        "UPDATE clients SET archived_at = UTC_TIMESTAMP() WHERE id = %s",
+        "UPDATE clients SET archived_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC' WHERE id = %s",
         (client_id,)
     )
 
@@ -1500,7 +1503,7 @@ def test_get_client_visits_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -1520,20 +1523,20 @@ def test_get_client_visits_closes_connection_on_error(monkeypatch):
 
 
 def test_get_planned_visits_returns_empty_list(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -1543,36 +1546,36 @@ def test_get_planned_visits_returns_empty_list(
 
 
 def test_get_planned_visits_returns_only_planned_in_order(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     # The description is used as a label. Times are in UTC.
     visit_rows = (
@@ -1650,7 +1653,7 @@ def test_get_planned_visits_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -1707,7 +1710,7 @@ def test_get_week_visits_uses_local_week_limits(monkeypatch):
         return []
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         FakeConnection
     )
 
@@ -1739,36 +1742,36 @@ def test_get_week_visits_uses_local_week_limits(monkeypatch):
 
 
 def test_get_week_visits_returns_visits_of_week(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     # Label, status, planned week, planned day, completed day,
     # planned duration and actual duration
@@ -1825,36 +1828,36 @@ def test_get_week_visits_returns_visits_of_week(
 
 
 def test_get_week_visits_uses_local_time_for_old_completed_visits(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     # Old completed visits without completed_date. Times are in UTC.
     # The week of 23.3.2026 ends in summer time.
@@ -1925,7 +1928,7 @@ def test_get_week_visits_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -1977,43 +1980,43 @@ def test_update_visit_rejects_invalid_changes():
 
 
 def test_update_visit_changes_service_priority_and_duration(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Apteekkiasiointi",)
     )
 
-    new_service_id = cursor.lastrowid
+    new_service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
         client_id,
@@ -2060,36 +2063,36 @@ def test_update_visit_changes_service_priority_and_duration(
 
 
 def test_update_visit_moves_visit_to_another_time(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     # Wednesday at 10.00, 120 minutes
     visit_id = add_planned_visit(
@@ -2138,36 +2141,36 @@ def test_update_visit_moves_visit_to_another_time(
 
 
 def test_update_visit_clears_time_and_moves_day(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
         client_id,
@@ -2211,36 +2214,36 @@ def test_update_visit_clears_time_and_moves_day(
 
 
 def test_update_visit_rejects_conflicting_schedule(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     # Wednesday 25.11.2026 at 10.00
     visit_id = add_planned_visit(
@@ -2282,20 +2285,20 @@ def test_update_visit_rejects_conflicting_schedule(
 
 
 def test_update_visit_returns_false_if_not_found(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -2305,47 +2308,48 @@ def test_update_visit_returns_false_if_not_found(
 
 
 def test_update_visit_rejects_completed_and_cancelled_visits(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     for status in ("completed", "cancelled"):
         cursor.execute(
             """
             INSERT INTO visits (client_id, service_id, status, planned_week)
             VALUES (%s, %s, %s, %s)
+            RETURNING id
             """,
             (client_id, service_id, status, date(2026, 11, 23))
         )
 
-        visit_id = cursor.lastrowid
+        visit_id = cursor.fetchone()[0]
 
         with pytest.raises(ValueError, match="Only planned visits"):
             update_visit(visit_id, {"priority": 1})
@@ -2359,17 +2363,17 @@ def test_update_visit_rejects_completed_and_cancelled_visits(
 
 
 def test_update_visit_rolls_back_on_error(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     def update_then_fail(cursor, visit_id, changes):
         cursor.execute(
@@ -2380,7 +2384,7 @@ def test_update_visit_rolls_back_on_error(
         raise RuntimeError("Simulated update failure")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -2390,18 +2394,18 @@ def test_update_visit_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
         client_id,
@@ -2453,7 +2457,7 @@ def test_update_visit_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -2512,36 +2516,36 @@ def test_complete_visit_rejects_invalid_times_and_duration():
 
 
 def test_complete_visit_with_one_click_uses_plan(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     # 18.11.2026 at 10.00, 120 minutes
     visit_id = add_planned_visit(
@@ -2600,36 +2604,36 @@ def test_complete_visit_with_one_click_uses_plan(
 
 
 def test_complete_visit_with_changed_duration(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
         client_id,
@@ -2660,36 +2664,36 @@ def test_complete_visit_with_changed_duration(
 
 
 def test_complete_visit_with_own_day_or_times(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     other_day_visit_id = add_planned_visit(
         client_id,
@@ -2736,36 +2740,36 @@ def test_complete_visit_with_own_day_or_times(
 
 
 def test_complete_visit_without_exact_times(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     # Planned for a day without a time or a duration
     day_visit_id = add_planned_visit(
@@ -2812,20 +2816,20 @@ def test_complete_visit_without_exact_times(
 
 
 def test_complete_visit_returns_false_if_not_found(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -2835,36 +2839,36 @@ def test_complete_visit_returns_false_if_not_found(
 
 
 def test_complete_visit_rejects_completed_and_cancelled_visits(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
         client_id,
@@ -2883,11 +2887,12 @@ def test_complete_visit_rejects_completed_and_cancelled_visits(
         """
         INSERT INTO visits (client_id, service_id, status, planned_week)
         VALUES (%s, %s, %s, %s)
+        RETURNING id
         """,
         (client_id, service_id, "cancelled", date(2026, 11, 16))
     )
 
-    cancelled_visit_id = cursor.lastrowid
+    cancelled_visit_id = cursor.fetchone()[0]
 
     with pytest.raises(ValueError, match="Only planned visits"):
         complete_visit(cancelled_visit_id)
@@ -2908,17 +2913,17 @@ def test_complete_visit_rejects_completed_and_cancelled_visits(
 
 
 def test_complete_visit_rolls_back_on_error(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     def complete_then_fail(
         cursor,
@@ -2936,7 +2941,7 @@ def test_complete_visit_rolls_back_on_error(
         raise RuntimeError("Simulated update failure")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -2946,18 +2951,18 @@ def test_complete_visit_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
         client_id,
@@ -3009,7 +3014,7 @@ def test_complete_visit_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -3036,36 +3041,36 @@ def test_cancel_visit_rejects_invalid_id():
 
 
 def test_cancel_visit_changes_only_status(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
         client_id,
@@ -3103,36 +3108,36 @@ def test_cancel_visit_changes_only_status(
 
 
 def test_cancelled_visit_stays_in_history_only(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
         client_id,
@@ -3164,20 +3169,20 @@ def test_cancelled_visit_stays_in_history_only(
 
 
 def test_cancel_visit_returns_false_if_not_found(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -3187,36 +3192,36 @@ def test_cancel_visit_returns_false_if_not_found(
 
 
 def test_cancel_visit_rejects_completed_and_cancelled_visits(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     completed_visit_id = add_completed_visit(
         client_id,
@@ -3250,17 +3255,17 @@ def test_cancel_visit_rejects_completed_and_cancelled_visits(
 
 
 def test_cancel_visit_rolls_back_on_error(
-    cursor_with_visit_scheduling,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_scheduling
+    cursor = postgres_cursor_with_visit_scheduling
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     def cancel_then_fail(cursor, visit_id):
         cursor.execute(
@@ -3271,7 +3276,7 @@ def test_cancel_visit_rolls_back_on_error(
         raise RuntimeError("Simulated update failure")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -3281,18 +3286,18 @@ def test_cancel_visit_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
         client_id,
@@ -3341,7 +3346,7 @@ def test_cancel_visit_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated update failure")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -3374,36 +3379,36 @@ def test_visit_functions_reject_invalid_note():
 
 
 def test_visit_functions_save_note_with_visit(
-    cursor_with_visit_notes,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_notes,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_notes
+    cursor = postgres_cursor_with_visit_notes
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Kauppa-asiointi",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     planned_visit_id = add_planned_visit(
         client_id,
@@ -3431,11 +3436,11 @@ def test_visit_functions_save_note_with_visit(
     cursor.execute("SELECT visit_id, content FROM visit_notes ORDER BY id")
 
     # Each note belongs to its own visit, stripped and with line breaks kept
-    assert cursor.fetchall() == (
+    assert cursor.fetchall() == [
         (planned_visit_id, "Muista ostoslista"),
         (completed_visit_id, "Käytiin kaupassa.\nHaettiin lääkkeet."),
         (visit_to_complete_id, "Kaikki hyvin"),
-    )
+    ]
 
     cursor.execute(
         "SELECT status, duration_minutes FROM visits WHERE id = %s",
@@ -3447,36 +3452,36 @@ def test_visit_functions_save_note_with_visit(
 
 
 def test_visit_functions_skip_empty_notes(
-    cursor_with_visit_notes,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_notes,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_notes
+    cursor = postgres_cursor_with_visit_notes
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     # Without a note, and with empty or blank notes
     add_planned_visit(client_id, service_id, planned_week=date(2026, 11, 23))
@@ -3497,36 +3502,36 @@ def test_visit_functions_skip_empty_notes(
 
 
 def test_complete_visit_does_not_add_note_without_completion(
-    cursor_with_visit_notes,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_notes,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_notes
+    cursor = postgres_cursor_with_visit_notes
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     completed_visit_id = add_completed_visit(
         client_id,
@@ -3547,17 +3552,17 @@ def test_complete_visit_does_not_add_note_without_completion(
 
 
 def test_add_visit_rolls_back_when_note_insert_fails(
-    cursor_with_visit_notes,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_notes,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_notes
+    cursor = postgres_cursor_with_visit_notes
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     # A real database error: the note points to a visit that does not
     # exist, so the foreign key rejects it after the visit was inserted.
@@ -3568,7 +3573,7 @@ def test_add_visit_rolls_back_when_note_insert_fails(
         )
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
@@ -3578,20 +3583,20 @@ def test_add_visit_rolls_back_when_note_insert_fails(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
-    with pytest.raises(pymysql.err.IntegrityError):
+    with pytest.raises(psycopg.IntegrityError):
         add_planned_visit(
             client_id,
             service_id,
@@ -3599,7 +3604,7 @@ def test_add_visit_rolls_back_when_note_insert_fails(
             note="Muistiinpano"
         )
 
-    with pytest.raises(pymysql.err.IntegrityError):
+    with pytest.raises(psycopg.IntegrityError):
         add_completed_visit(
             client_id,
             service_id,
@@ -3618,17 +3623,17 @@ def test_add_visit_rolls_back_when_note_insert_fails(
 
 
 def test_complete_visit_rolls_back_when_note_insert_fails(
-    cursor_with_visit_notes,
-    connect_to_test_mysql,
+    postgres_cursor_with_visit_notes,
+    connect_to_test_postgres,
     monkeypatch
 ):
-    cursor = cursor_with_visit_notes
+    cursor = postgres_cursor_with_visit_notes
 
-    cursor.execute("SELECT DATABASE()")
+    cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
 
     def get_test_connection():
-        return connect_to_test_mysql(database=database)
+        return connect_to_test_postgres(database=database)
 
     def insert_note_with_wrong_visit(cursor, visit_id, content):
         cursor.execute(
@@ -3637,23 +3642,23 @@ def test_complete_visit_rolls_back_when_note_insert_fails(
         )
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s)",
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
         ("Hilma", "Testi")
     )
 
-    client_id = cursor.lastrowid
+    client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s)",
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
         ("Ulkoilu",)
     )
 
-    service_id = cursor.lastrowid
+    service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
         client_id,
@@ -3667,7 +3672,7 @@ def test_complete_visit_rolls_back_when_note_insert_fails(
         insert_note_with_wrong_visit
     )
 
-    with pytest.raises(pymysql.err.IntegrityError):
+    with pytest.raises(psycopg.IntegrityError):
         complete_visit(visit_id, note="Muistiinpano")
 
     # The status change was rolled back together with the note
@@ -3742,7 +3747,7 @@ def test_complete_visit_with_note_closes_connection_on_error(monkeypatch):
         raise RuntimeError("Simulated note failure")
 
     monkeypatch.setattr(
-        "carelog.services.visits.get_connection",
+        "carelog.services.visits.get_postgres_connection",
         get_test_connection
     )
 

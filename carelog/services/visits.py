@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from carelog.database.connection import get_connection
+from carelog.database.postgres_connection import get_postgres_connection
 from carelog.database.repositories.cancel_visit import cancel_visit_record
 from carelog.database.repositories.complete_visit import complete_visit_record
 from carelog.database.repositories.insert_visit import insert_visit
@@ -21,10 +21,10 @@ from carelog.services.visit_notes import validate_note_content
 
 
 # DATE columns hold the user's local calendar day.
-# DATETIME columns are stored in UTC.
+# TIMESTAMP columns are stored in UTC.
 LOCAL_TIMEZONE = ZoneInfo("Europe/Helsinki")
 
-# Largest value of a MySQL INT column.
+# Largest value of an INT column.
 MAX_INT_VALUE = 2147483647
 
 
@@ -259,8 +259,8 @@ def add_planned_visit(
 
         planned_date = local_date
 
-        # Store in UTC without time zone and seconds fractions,
-        # because a MySQL DATETIME column would round them.
+        # Store in UTC without time zone and seconds fractions.
+        # A planned time does not need fractions of a second.
         planned_at = planned_at.astimezone(timezone.utc)
         planned_at = planned_at.replace(tzinfo=None, microsecond=0)
 
@@ -299,7 +299,7 @@ def add_planned_visit(
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         # New visits are not allowed for missing or archived clients.
@@ -399,7 +399,7 @@ def add_completed_visit(
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         # New visits are not allowed for missing or archived clients.
@@ -466,7 +466,7 @@ def get_visit(visit_id: int) -> dict | None:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         visit = select_visit(cursor, visit_id)
@@ -498,7 +498,7 @@ def get_client_visits(client_id: int) -> list[dict]:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         visits = select_client_visits(cursor, client_id)
@@ -522,7 +522,7 @@ def get_planned_visits() -> list[dict]:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         visits = select_planned_visits(cursor)
@@ -579,7 +579,7 @@ def get_week_visits(week_start: date) -> list[dict]:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         visits = select_week_visits(
@@ -790,7 +790,7 @@ def update_visit(visit_id: int, changes: dict) -> bool:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         visit = select_visit(cursor, visit_id)
@@ -876,7 +876,7 @@ def complete_visit(
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         visit = select_visit(cursor, visit_id)
@@ -993,7 +993,7 @@ def cancel_visit(visit_id: int) -> bool:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         cancelled = cancel_visit_record(

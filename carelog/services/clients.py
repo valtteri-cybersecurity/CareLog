@@ -4,7 +4,7 @@ from carelog.database.repositories.update_client import (
     ALLOWED_FIELDS,
     update_client_record,
 )
-from carelog.database.connection import get_connection
+from carelog.database.postgres_connection import get_postgres_connection
 from carelog.database.repositories.insert_client import insert_client
 from carelog.database.repositories.select_client import select_client
 from carelog.database.repositories.select_clients import select_clients
@@ -168,7 +168,7 @@ def add_client(
     connection = None
     cursor = None
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         client_id = insert_client(cursor, first_name, last_name, phone, email, street_address, postal_code, city, distance_from_home_km)
@@ -188,10 +188,6 @@ def add_client(
 
 
 
-from pymysql.cursors import Cursor
-
-
-
 def get_client(client_id: int) -> dict | None:
 
     # Client ID validation
@@ -206,7 +202,7 @@ def get_client(client_id: int) -> dict | None:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         client = select_client(cursor, client_id)
@@ -226,7 +222,7 @@ def get_clients() -> list[dict]:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         clients = select_clients(cursor)
@@ -352,7 +348,7 @@ def update_client(client_id: int, changes: dict) -> bool:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         updated = update_client_record(
@@ -395,7 +391,7 @@ def archive_client(client_id: int) -> bool:
     cursor = None
 
     try:
-        connection = get_connection()
+        connection = get_postgres_connection()
         cursor = connection.cursor()
 
         archived = archive_client_record(

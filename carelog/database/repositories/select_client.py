@@ -1,5 +1,5 @@
 
-from pymysql.cursors import Cursor
+from psycopg import Cursor
 
 
 def select_client(cursor: Cursor, client_id: int) -> dict | None:

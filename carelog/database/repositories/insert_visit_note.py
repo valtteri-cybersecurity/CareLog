@@ -1,4 +1,4 @@
-from pymysql.cursors import Cursor
+from psycopg import Cursor
 
 
 def insert_visit_note(
@@ -17,6 +17,7 @@ def insert_visit_note(
             content
         )
         VALUES (%s, %s)
+        RETURNING id
     """
 
     cursor.execute(
@@ -24,4 +25,5 @@ def insert_visit_note(
         (visit_id, content)
     )
 
-    return cursor.lastrowid
+    # RETURNING id gives the id that PostgreSQL created for the row.
+    return cursor.fetchone()[0]
