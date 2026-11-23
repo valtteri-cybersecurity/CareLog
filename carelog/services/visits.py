@@ -10,6 +10,7 @@ from carelog.database.repositories.insert_visit_note import insert_visit_note
 from carelog.database.repositories.select_client import select_client
 from carelog.database.repositories.select_client_visits import select_client_visits
 from carelog.database.repositories.select_planned_visits import select_planned_visits
+from carelog.database.repositories.select_service import select_service
 from carelog.database.repositories.select_visit import select_visit
 from carelog.database.repositories.select_week_visits import select_week_visits
 from carelog.database.repositories.update_visit import (
@@ -206,7 +207,8 @@ def add_planned_visit(
     planned_duration_minutes: int | None = None,
     priority: int = 2,
     description: str | None = None,
-    note: str | None = None
+    note: str | None = None,
+    price: Decimal | int | float | None = None
 ) -> int:
 
     # Client and service ID validation
@@ -288,9 +290,10 @@ def add_planned_visit(
     if priority < 1 or priority > 3:
         raise ValueError("Priority must be between 1 and 3")
 
-    # Description and note validation
+    # Description, hourly rate and note validation
 
     description = validate_description(description)
+    price = validate_price(price)
     note = validate_optional_note(note)
 
     # Database operation
@@ -311,6 +314,16 @@ def add_planned_visit(
         if client["archived_at"] is not None:
             raise ValueError("Cannot add a visit for an archived client")
 
+        # visits.price is the hourly rate of this visit. Without a given
+        # rate, the current default rate of the service is copied, so a
+        # later change of the service does not change this visit. A
+        # missing service is rejected by the foreign key below.
+        if price is None:
+            service = select_service(cursor, service_id)
+
+            if service is not None:
+                price = service["default_hourly_rate"]
+
         visit_id = insert_visit(
             cursor,
             client_id,
@@ -321,7 +334,8 @@ def add_planned_visit(
             planned_date,
             planned_at,
             planned_duration_minutes,
-            description
+            description,
+            price=price
         )
 
         # The note is saved in the same transaction, so the visit and
@@ -410,6 +424,14 @@ def add_completed_visit(
 
         if client["archived_at"] is not None:
             raise ValueError("Cannot add a visit for an archived client")
+
+        # Without a given hourly rate, the current default rate of the
+        # service is copied to the visit, as in add_planned_visit().
+        if price is None:
+            service = select_service(cursor, service_id)
+
+            if service is not None:
+                price = service["default_hourly_rate"]
 
         # Planning fields stay NULL. Priority only matters for planning,
         # so the normal priority is stored.
