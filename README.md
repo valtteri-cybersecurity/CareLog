@@ -8,13 +8,13 @@
 
 | Area | Status |
 | --- | --- |
-| PostgreSQL 16 schema and versioned migrations (v001–v012) | Implemented |
+| PostgreSQL 16 schema and versioned migrations (v001–v013) | Implemented |
 | Installer with least-privilege database accounts | Implemented |
 | Clients: add, get, list, update, archive | Implemented and tested |
 | Services: add, get, list, update | Implemented and tested |
 | Client-specific trips (saved routes and mileage) | Implemented and tested |
 | Visits: planned and completed visits, weekly planning | Implemented and tested |
-| Visit notes | Implemented and tested |
+| Visit notes with edit history | Implemented and tested |
 | Expenses | Implemented and tested |
 | Visit trip legs (multi-stop trips of a visit) | Implemented and tested |
 | Authentication and authorization | Not started |
@@ -118,6 +118,7 @@ docker stop carelog-postgres-test
 
 - The application connects as `carelog_app`, which has table-level privileges only. It cannot change the database structure, read password hashes, delete clients, services or visits, or change migration history.
 - Migrations run as `carelog_migrator`, which owns the tables. `carelog/database/postgres_permissions.py` is the source of truth for the `carelog_app` privileges and checks that no extra privileges remain.
+- Every change of a visit note's content is saved to `visit_note_history` by the database trigger `trg_visit_notes_history` (migration v013), also for changes made directly in SQL. The trigger function runs as the table owner with a fixed `search_path`; `carelog_app` can only read the history. `edited_by_user_id` stays empty until CareLog has authentication: the shared `carelog_app` account does not tell which person made the change.
 - All SQL queries are parameterized.
 - Do not use real client data in development or tests.
 
@@ -129,7 +130,7 @@ CareLog/
 │   ├── database/
 │   │   ├── postgres_connection.py   # PostgreSQL connections
 │   │   ├── postgres_migrate.py      # PostgreSQL migration runner
-│   │   ├── postgres_migrations/     # PostgreSQL v001–v012
+│   │   ├── postgres_migrations/     # PostgreSQL v001–v013
 │   │   ├── postgres_permissions.py  # carelog_app privileges
 │   │   └── repositories/            # parameterized SQL queries
 │   └── services/              # validation and business logic

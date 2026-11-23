@@ -16,6 +16,10 @@ APP_TABLE_PRIVILEGES = {
     "visit_notes": ("SELECT", "INSERT", "UPDATE"),
     "expenses": ("SELECT", "INSERT", "UPDATE"),
     "visit_trip_legs": ("SELECT", "INSERT", "DELETE"),
+    # The history is written only by the trigger function of v013, which
+    # runs with the rights of the migration account. The application may
+    # only read it, so it cannot change or remove earlier versions.
+    "visit_note_history": ("SELECT",),
 }
 
 # The application may read only these columns of users. It cannot read

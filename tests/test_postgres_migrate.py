@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 
 from carelog.database import postgres_migrate
@@ -13,11 +15,12 @@ from carelog.database.postgres_migrations import (
     v009_visit_scheduling,
     v010_visit_constraints,
     v011_visit_trip_legs,
+    v012_foreign_key_indexes,
 )
 from tests.postgres_helpers import get_columns, insert_visit, table_exists
 
 
-EXPECTED_VERSIONS = set(range(1, 13))
+EXPECTED_VERSIONS = set(range(1, 14))
 
 
 @pytest.fixture
@@ -55,6 +58,7 @@ def test_run_migrations_creates_tables(postgres_cursor, migration_database):
         "visit_notes",
         "expenses",
         "visit_trip_legs",
+        "visit_note_history",
         "schema_migrations",
     ]
 
@@ -186,6 +190,7 @@ def test_run_migrations_creates_foreign_key_indexes(postgres_cursor, migration_d
     assert postgres_cursor.fetchall() == [
         ("expenses", "idx_expenses_visit_id"),
         ("trips", "idx_trips_client_id"),
+        ("visit_note_history", "idx_visit_note_history_note_id"),
         ("visit_notes", "idx_visit_notes_visit_id"),
         ("visits", "idx_visits_client_id"),
     ]
@@ -226,17 +231,81 @@ def test_upgrade_from_v011_database(postgres_cursor, migration_database):
 
     visit_id = insert_visit(postgres_cursor)
 
-    # The first run adds only v012, the second run changes nothing.
+    # The first run adds v012 and v013, the second run changes nothing.
     postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
     postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
 
     assert postgres_migrate.get_applied_versions(postgres_cursor) == EXPECTED_VERSIONS
 
     postgres_cursor.execute("SELECT COUNT(*) FROM pg_indexes WHERE indexname LIKE 'idx_%'")
-    assert postgres_cursor.fetchone()[0] == 4
+    assert postgres_cursor.fetchone()[0] == 5
 
     postgres_cursor.execute("SELECT id FROM visits")
     assert postgres_cursor.fetchall() == [(visit_id,)]
+
+
+def test_upgrade_from_v012_database(postgres_cursor, migration_database):
+    # Build a database as the previous release left it: versions 1–12.
+    postgres_migrate.create_migrations_table(postgres_cursor)
+
+    old_migrations = [
+        (1, v001_users),
+        (2, v002_clients),
+        (3, v003_services),
+        (4, v004_trips),
+        (5, v005_visits),
+        (6, v006_visit_notes),
+        (7, v007_expenses),
+        (8, v008_business_constraints),
+        (9, v009_visit_scheduling),
+        (10, v010_visit_constraints),
+        (11, v011_visit_trip_legs),
+        (12, v012_foreign_key_indexes),
+    ]
+
+    for version, migration in old_migrations:
+        migration.upgrade(postgres_cursor)
+        postgres_migrate.record_migration(postgres_cursor, version)
+
+    # The v012 schema has no updated_at in visit_notes, and the check
+    # does not ask for it before v013.
+    postgres_migrate.validate_schema(postgres_cursor, set(range(1, 13)))
+
+    visit_id = insert_visit(postgres_cursor)
+    postgres_cursor.execute(
+        "INSERT INTO visit_notes (visit_id, content, created_at) "
+        "VALUES (%s, 'Vanha muistiinpano', '2026-11-18 09:00') RETURNING id",
+        (visit_id,),
+    )
+    note_id = postgres_cursor.fetchone()[0]
+
+    # The first run adds only v013, the second run changes nothing.
+    postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
+    postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
+
+    assert postgres_migrate.get_applied_versions(postgres_cursor) == EXPECTED_VERSIONS
+
+    # The old note is kept, and it is not marked as edited
+    postgres_cursor.execute(
+        "SELECT content, created_at, updated_at FROM visit_notes WHERE id = %s",
+        (note_id,),
+    )
+    assert postgres_cursor.fetchone() == (
+        "Vanha muistiinpano",
+        datetime(2026, 11, 18, 9, 0),
+        datetime(2026, 11, 18, 9, 0),
+    )
+
+    postgres_cursor.execute("SELECT COUNT(*) FROM visit_note_history")
+    assert postgres_cursor.fetchone()[0] == 0
+
+    # A new note gets updated_at from the default value
+    postgres_cursor.execute(
+        "INSERT INTO visit_notes (visit_id, content) VALUES (%s, 'Uusi') "
+        "RETURNING created_at = updated_at",
+        (visit_id,),
+    )
+    assert postgres_cursor.fetchone()[0] is True
 
 
 def test_failed_migration_is_rolled_back(postgres_cursor, migration_database, monkeypatch):
@@ -273,7 +342,7 @@ def test_failed_migration_is_rolled_back(postgres_cursor, migration_database, mo
 
 def test_run_migrations_rejects_unknown_version(postgres_cursor, migration_database):
     postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
-    postgres_migrate.record_migration(postgres_cursor, 13)
+    postgres_migrate.record_migration(postgres_cursor, 14)
 
     with pytest.raises(RuntimeError, match="Unknown migration versions"):
         postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
@@ -358,6 +427,30 @@ def test_run_migrations_rejects_missing_table(postgres_cursor, migration_databas
         (
             "ALTER TABLE clients DISABLE TRIGGER trg_clients_updated_at",
             "Invalid triggers in table: clients",
+        ),
+        (
+            "ALTER TABLE visit_notes DISABLE TRIGGER trg_visit_notes_history",
+            "Invalid triggers in table: visit_notes",
+        ),
+        (
+            "ALTER TABLE visit_notes ALTER COLUMN updated_at DROP NOT NULL",
+            "Invalid columns in table: visit_notes",
+        ),
+        (
+            "ALTER FUNCTION save_visit_note_history() SECURITY INVOKER",
+            "Invalid function settings: save_visit_note_history",
+        ),
+        (
+            "ALTER FUNCTION save_visit_note_history() RESET search_path",
+            "Invalid function settings: save_visit_note_history",
+        ),
+        (
+            "ALTER FUNCTION save_visit_note_history() SET search_path = public",
+            "Invalid function settings: save_visit_note_history",
+        ),
+        (
+            "GRANT EXECUTE ON FUNCTION save_visit_note_history() TO PUBLIC",
+            "Invalid function privileges: save_visit_note_history",
         ),
     ],
 )

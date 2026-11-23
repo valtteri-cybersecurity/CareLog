@@ -1,5 +1,4 @@
 import threading
-import time
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -7,6 +6,9 @@ from zoneinfo import ZoneInfo
 import psycopg
 import pytest
 
+from carelog.database.repositories.archive_client import archive_client_record
+from carelog.database.repositories.insert_visit import insert_visit
+from carelog.services.clients import archive_client, get_client
 from carelog.services.visits import (
     add_completed_visit,
     add_planned_visit,
@@ -18,6 +20,7 @@ from carelog.services.visits import (
     get_week_visits,
     update_visit,
 )
+from tests.postgres_helpers import start_in_thread, wait_until_waiting_for_lock
 
 
 HELSINKI = ZoneInfo("Europe/Helsinki")
@@ -45,8 +48,15 @@ def test_add_planned_visit_rejects_invalid_ids():
             )
 
 
-def test_add_planned_visit_rejects_invalid_priority():
-    for priority in (0, 4, True, "2", None):
+def test_add_planned_visit_rejects_invalid_priority(monkeypatch):
+    # The priority is checked before any database connection is opened
+    def connection_not_allowed():
+        raise AssertionError("The database must not be used")
+
+    monkeypatch.setattr("carelog.services.visits.get_postgres_connection", connection_not_allowed)
+
+    # bool is a subclass of int in Python, so True and False are tested too
+    for priority in (0, 4, -1, True, False, None, "2"):
         with pytest.raises(ValueError):
             add_planned_visit(
                 1,
@@ -510,7 +520,7 @@ def test_add_planned_visit_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
-    def select_then_fail(cursor, client_id):
+    def select_then_fail(cursor, client_id, for_update=False):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
@@ -1001,7 +1011,7 @@ def test_add_completed_visit_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
-    def select_then_fail(cursor, client_id):
+    def select_then_fail(cursor, client_id, for_update=False):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
@@ -1956,7 +1966,13 @@ def test_update_visit_rejects_invalid_id():
             update_visit(visit_id, {"priority": 1})
 
 
-def test_update_visit_rejects_invalid_changes():
+def test_update_visit_rejects_invalid_changes(monkeypatch):
+    # The changes are checked before any database connection is opened
+    def connection_not_allowed():
+        raise AssertionError("The database must not be used")
+
+    monkeypatch.setattr("carelog.services.visits.get_postgres_connection", connection_not_allowed)
+
     invalid_changes = (
         None,
         [],
@@ -1969,6 +1985,11 @@ def test_update_visit_rejects_invalid_changes():
         # Invalid values
         {"service_id": True},
         {"priority": 0},
+        {"priority": 4},
+        {"priority": -1},
+        {"priority": True},
+        {"priority": False},
+        {"priority": None},
         {"priority": "1"},
         {"planned_duration_minutes": 0},
         {"description": 123},
@@ -3834,49 +3855,6 @@ def lock_database(
         other_connection.close()
 
 
-def start_in_thread(function, *args, **kwargs):
-    # Runs the service call in its own thread. done is set when the call
-    # has returned or raised, and outcome holds the result or the error.
-    outcome = {}
-    done = threading.Event()
-
-    def run():
-        try:
-            outcome["result"] = function(*args, **kwargs)
-        except Exception as error:
-            outcome["error"] = error
-        finally:
-            done.set()
-
-    thread = threading.Thread(target=run)
-    thread.start()
-
-    return thread, done, outcome
-
-
-def wait_until_waiting_for_lock(cursor, timeout_seconds=10):
-    # Waits until a session of this test database waits for a row lock.
-    # The time limit stops the test instead of hanging.
-    deadline = time.monotonic() + timeout_seconds
-
-    while time.monotonic() < deadline:
-        cursor.execute(
-            """
-            SELECT COUNT(*)
-            FROM pg_stat_activity
-            WHERE datname = current_database()
-              AND wait_event_type = 'Lock'
-            """
-        )
-
-        if cursor.fetchone()[0] > 0:
-            return
-
-        time.sleep(0.02)
-
-    pytest.fail("The service call did not wait for the row lock")
-
-
 def test_update_visit_uses_current_locked_schedule(lock_database):
     cursor, visit_id, other_connection = lock_database
 
@@ -4056,6 +4034,185 @@ def test_update_and_complete_still_work_normally(lock_database):
     assert complete_visit(visit_id + 1000) is False
 
 
+# CLIENT LOCKING TESTS
+# A new visit locks the client row with FOR UPDATE. The client cannot be
+# archived between the archived_at check and the commit of the visit.
+
+
+@pytest.fixture
+def client_lock_database(lock_database, connect_to_test_postgres, monkeypatch):
+    cursor, visit_id, other_connection = lock_database
+
+    cursor.execute("SELECT current_database()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_postgres(database=database)
+
+    # archive_client() and get_client() use the same test database
+    monkeypatch.setattr("carelog.services.clients.get_postgres_connection", get_test_connection)
+
+    # The active client and the service of the fixture visit
+    cursor.execute("SELECT client_id, service_id FROM visits WHERE id = %s", (visit_id,))
+    client_id, service_id = cursor.fetchone()
+
+    return cursor, client_id, service_id, other_connection
+
+
+NEW_VISITS = [
+    (add_planned_visit, {"planned_date": date(2026, 11, 20)}),
+    (add_completed_visit, {"completed_date": date(2026, 11, 20)}),
+]
+
+
+@pytest.mark.parametrize(("add_visit", "arguments"), NEW_VISITS, ids=["planned", "completed"])
+def test_add_visit_waits_for_archiving_and_rejects_archived_client(
+    client_lock_database,
+    add_visit,
+    arguments
+):
+    cursor, client_id, service_id, other_connection = client_lock_database
+
+    # The other connection archives the client but does not commit yet,
+    # so it keeps the client row locked.
+    with other_connection.cursor() as other_cursor:
+        assert archive_client_record(other_cursor, client_id) is True
+
+    thread, done, outcome = start_in_thread(add_visit, client_id, service_id, **arguments)
+
+    wait_until_waiting_for_lock(cursor)
+    assert not done.is_set()
+
+    other_connection.commit()
+
+    assert done.wait(timeout=10)
+    thread.join(timeout=10)
+
+    assert isinstance(outcome.get("error"), ValueError)
+    assert str(outcome["error"]) == "Cannot add a visit for an archived client"
+
+    # Only the visit of the fixture exists
+    cursor.execute("SELECT COUNT(*) FROM visits WHERE client_id = %s", (client_id,))
+    assert cursor.fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(("add_visit", "arguments"), NEW_VISITS, ids=["planned", "completed"])
+def test_archiving_waits_for_visit_that_locked_the_client_first(
+    client_lock_database,
+    monkeypatch,
+    add_visit,
+    arguments
+):
+    cursor, client_id, service_id, other_connection = client_lock_database
+
+    client_locked = threading.Event()
+    may_commit = threading.Event()
+
+    # The visit is inserted while the client row is locked. The service
+    # then waits before its commit until the test allows it.
+    def insert_then_wait(*args, **kwargs):
+        visit_id = insert_visit(*args, **kwargs)
+        client_locked.set()
+
+        if not may_commit.wait(timeout=10):
+            raise RuntimeError("The test did not allow the commit")
+
+        return visit_id
+
+    monkeypatch.setattr("carelog.services.visits.insert_visit", insert_then_wait)
+
+    add_thread, add_done, add_outcome = start_in_thread(
+        add_visit, client_id, service_id, **arguments
+    )
+    archive_thread = None
+
+    try:
+        assert client_locked.wait(timeout=10)
+
+        archive_thread, archive_done, archive_outcome = start_in_thread(archive_client, client_id)
+
+        # Archiving must wait for the lock of the visit transaction
+        wait_until_waiting_for_lock(cursor)
+        assert not archive_done.is_set()
+
+        may_commit.set()
+
+        assert add_done.wait(timeout=10)
+        assert archive_done.wait(timeout=10)
+
+    finally:
+        # The threads can finish even if the test failed
+        may_commit.set()
+        add_thread.join(timeout=10)
+
+        if archive_thread is not None:
+            archive_thread.join(timeout=10)
+
+    assert "error" not in add_outcome
+    assert archive_outcome == {"result": True}
+
+    # The visit was saved, and the client was archived only after it
+    cursor.execute(
+        """
+        SELECT v.created_at, c.archived_at
+        FROM visits AS v
+        JOIN clients AS c
+          ON c.id = v.client_id
+        WHERE v.id = %s
+        """,
+        (add_outcome["result"],)
+    )
+    created_at, archived_at = cursor.fetchone()
+
+    assert archived_at is not None
+    assert created_at <= archived_at
+
+
+def test_get_client_does_not_wait_for_client_lock(client_lock_database):
+    cursor, client_id, service_id, other_connection = client_lock_database
+
+    # The other connection keeps the client row locked
+    with other_connection.cursor() as other_cursor:
+        archive_client_record(other_cursor, client_id)
+
+    thread, done, outcome = start_in_thread(get_client, client_id)
+
+    # get_client() does not lock, so it returns at once with the last
+    # committed values.
+    assert done.wait(timeout=5)
+    thread.join(timeout=5)
+    assert outcome["result"]["archived_at"] is None
+
+    other_connection.rollback()
+
+
+def test_error_after_client_lock_rolls_back_and_releases_the_client(
+    client_lock_database,
+    monkeypatch
+):
+    cursor, client_id, service_id, other_connection = client_lock_database
+
+    def insert_then_fail(*args, **kwargs):
+        insert_visit(*args, **kwargs)
+        raise RuntimeError("Simulated failure after the lock")
+
+    monkeypatch.setattr("carelog.services.visits.insert_visit", insert_then_fail)
+
+    with pytest.raises(RuntimeError, match="Simulated failure"):
+        add_planned_visit(client_id, service_id, planned_date=date(2026, 11, 20))
+
+    # The inserted visit was rolled back
+    cursor.execute("SELECT COUNT(*) FROM visits WHERE client_id = %s", (client_id,))
+    assert cursor.fetchone()[0] == 1
+
+    # The lock was released: another connection can lock the row at once
+    other_connection.execute(
+        "SELECT id FROM clients WHERE id = %s FOR UPDATE NOWAIT",
+        (client_id,)
+    )
+    other_connection.rollback()
+
+
 # HOURLY RATE TESTS
 # visits.price is the hourly rate of the visit.
 
@@ -4224,3 +4381,21 @@ def test_zero_rate_is_not_a_missing_rate(rate_database):
     )
 
     assert get_saved_price(cursor, free_visit_id) == Decimal("0.00")
+
+
+# PRIORITY TESTS
+# 1 = urgent, 2 = normal, 3 = low
+
+
+def test_add_and_update_visit_accept_every_priority(rate_database):
+    cursor, client_id, service_id = rate_database
+
+    for priority in (1, 2, 3):
+        visit_id = add_planned_visit(
+            client_id, service_id, planned_date=date(2026, 11, 27), priority=priority
+        )
+        assert get_visit(visit_id)["priority"] == priority
+
+    for priority in (3, 1, 2):
+        assert update_visit(visit_id, {"priority": priority}) is True
+        assert get_visit(visit_id)["priority"] == priority
