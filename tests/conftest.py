@@ -23,27 +23,91 @@ from carelog.database.postgres_migrations import (
 # carelog_test_*, which is dropped after the test. Use a separate,
 # disposable PostgreSQL server for these tests.
 
+# A disposable test server is marked with this comment on its postgres
+# database. Set it only on a server whose data may be lost:
+# COMMENT ON DATABASE postgres IS 'carelog-disposable-test-server';
+TEST_SERVER_MARKER = "carelog-disposable-test-server"
 
-@pytest.fixture
-def connect_to_test_postgres():
+
+@pytest.fixture(scope="session")
+def test_server_settings():
     user = os.getenv("CARELOG_TEST_PG_USER")
     if not user:
         pytest.skip("Set CARELOG_TEST_PG_USER to run the PostgreSQL tests")
 
     # The application and migration accounts must never be used for tests.
     if user == "carelog_app" or user == "carelog_migrator":
-        pytest.fail(
+        pytest.exit(
             "Do not use carelog_app or carelog_migrator as CARELOG_TEST_PG_USER; "
-            "use a separate test user"
+            "use a separate test user",
+            returncode=1,
         )
 
-    def connect(database="postgres", user=user, password=None, autocommit=False):
+    settings = {
+        "host": os.getenv("CARELOG_TEST_PG_HOST", "127.0.0.1"),
+        "port": int(os.getenv("CARELOG_TEST_PG_PORT", "5432")),
+        "user": user,
+        "password": os.getenv("CARELOG_TEST_PG_PASSWORD", ""),
+    }
+
+    # The tests create and drop databases and accounts, so the server
+    # itself is checked once before any test, not only the settings above.
+    connection = psycopg.connect(
+        host=settings["host"],
+        port=settings["port"],
+        dbname="postgres",
+        user=settings["user"],
+        password=settings["password"],
+        autocommit=True,
+        connect_timeout=10,
+    )
+
+    with connection:
+        carelog_databases = connection.execute(
+            "SELECT COUNT(*) FROM pg_database WHERE datname = 'carelog'"
+        ).fetchone()[0]
+
+        carelog_accounts = connection.execute(
+            "SELECT COUNT(*) FROM pg_roles "
+            "WHERE rolname IN ('carelog_app', 'carelog_migrator')"
+        ).fetchone()[0]
+
+        marker = connection.execute(
+            "SELECT shobj_description(oid, 'pg_database') "
+            "FROM pg_database WHERE datname = 'postgres'"
+        ).fetchone()[0]
+
+    # The real CareLog server always has these. Stop all tests at once.
+    if carelog_databases != 0 or carelog_accounts != 0:
+        pytest.exit(
+            "The test server has the carelog database or the carelog_app or "
+            "carelog_migrator account. Refusing to run tests against the real "
+            "CareLog server.",
+            returncode=1,
+        )
+
+    if marker != TEST_SERVER_MARKER:
+        pytest.exit(
+            "The test server is not marked as a disposable test server. "
+            "See Running Tests in README.md.",
+            returncode=1,
+        )
+
+    return settings
+
+
+@pytest.fixture
+def connect_to_test_postgres(test_server_settings):
+    def connect(database="postgres", user=None, password=None, autocommit=False):
+        if user is None:
+            user = test_server_settings["user"]
+
         if password is None:
-            password = os.getenv("CARELOG_TEST_PG_PASSWORD", "")
+            password = test_server_settings["password"]
 
         return psycopg.connect(
-            host=os.getenv("CARELOG_TEST_PG_HOST", "127.0.0.1"),
-            port=int(os.getenv("CARELOG_TEST_PG_PORT", "5432")),
+            host=test_server_settings["host"],
+            port=test_server_settings["port"],
             dbname=database,
             user=user,
             password=password,

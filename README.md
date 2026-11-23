@@ -2,22 +2,25 @@
 
 **CareLog** is a Python and PostgreSQL application for managing the daily work of a small home assistance business: clients, services, visits, mileage, expenses and reports.
 
-> **Project status:** Under development. The database, installer and the client and service logic are in place. The API, authentication and user interface are not built yet, so the application is not ready for production use or for real clients' personal data.
+> **Project status:** Under development. The database, installer and the service layer for the core records are in place. The API, authentication and user interface are not built yet, so the application is not ready for production use or for real clients' personal data.
 
 ## Current Status
 
 | Area | Status |
 | --- | --- |
-| PostgreSQL 16 schema and versioned migrations (v001–v011) | Implemented |
+| PostgreSQL 16 schema and versioned migrations (v001–v012) | Implemented |
 | Installer with least-privilege database accounts | Implemented |
 | Clients: add, get, list, update, archive | Implemented and tested |
 | Services: add, get, list, update | Implemented and tested |
-| Trips (client-specific routes and mileage) | Next |
-| Visits, notes and expenses | Planned |
-| Authentication and authorization | Planned |
-| FastAPI layer | Planned |
-| Finnish browser user interface | Planned |
-| Reports and receipt management | Planned |
+| Client-specific trips (saved routes and mileage) | Implemented and tested |
+| Visits: planned and completed visits, weekly planning | Implemented and tested |
+| Visit notes | Implemented and tested |
+| Expenses | Implemented and tested |
+| Visit trip legs (multi-stop trips of a visit) | Implemented and tested |
+| Authentication and authorization | Not started |
+| FastAPI layer | Not started |
+| Finnish browser user interface | Not started |
+| Reports and receipt storage | Not started |
 
 ## Technology Stack
 
@@ -43,7 +46,12 @@ GRANT CONNECT ON DATABASE carelog TO carelog_migrator, carelog_app;
 \connect carelog
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA public TO carelog_migrator;
+GRANT USAGE ON SCHEMA public TO carelog_app;
 ```
+
+- `CONNECT`: both accounts may connect to `carelog`; other accounts may not.
+- `USAGE` and `CREATE` on `public`: `carelog_migrator` creates and owns all tables, so only it can change the structure.
+- `USAGE` only on `public`: `carelog_app` can use the tables it is granted, but cannot create database objects.
 
 The application settings are in `.env` (mode `600`, never committed):
 
@@ -75,14 +83,24 @@ python -m pytest -v -rs
 
 Database tests are skipped unless the test environment variables below are set, so a green run does not mean that every test ran. Check the skipped count in the summary.
 
-The database tests create a temporary `carelog_test_*` database for every test and drop it afterwards. The permission tests also create and drop temporary login accounts. Run them only against a separate, disposable server, never against `carelog-postgres`:
+The database tests create a temporary `carelog_test_*` database for every test and drop it afterwards. The permission tests also create and drop temporary login accounts. Run them only against a separate, disposable server, never against `carelog-postgres`. Start one with its data in memory:
 
 ```bash
 docker run --rm -d --name carelog-postgres-test -p 127.0.0.1:5434:5432 -e POSTGRES_PASSWORD=carelog-test-only --tmpfs /var/lib/postgresql/data postgres:16
 ```
 
+Mark it as disposable. The tests stop at once if this mark is missing, or if the server has the `carelog` database or the `carelog_app` or `carelog_migrator` account:
+
+```bash
+docker exec carelog-postgres-test psql -U postgres -c "COMMENT ON DATABASE postgres IS 'carelog-disposable-test-server'"
+```
+
 ```bash
 export CARELOG_TEST_PG_PORT=5434 CARELOG_TEST_PG_USER=postgres CARELOG_TEST_PG_PASSWORD=carelog-test-only
+```
+
+```bash
+python -m pytest -v -rs
 ```
 
 ```bash
@@ -111,7 +129,7 @@ CareLog/
 │   ├── database/
 │   │   ├── postgres_connection.py   # PostgreSQL connections
 │   │   ├── postgres_migrate.py      # PostgreSQL migration runner
-│   │   ├── postgres_migrations/     # PostgreSQL v001–v011
+│   │   ├── postgres_migrations/     # PostgreSQL v001–v012
 │   │   ├── postgres_permissions.py  # carelog_app privileges
 │   │   └── repositories/            # parameterized SQL queries
 │   └── services/              # validation and business logic
@@ -125,12 +143,10 @@ The service layer validates input and calls the repository layer, which runs the
 
 ## Roadmap
 
-1. Trips: client-specific default routes and mileage
-2. Visits, visit notes and expenses
-3. Authentication and authorization (admin and worker roles)
-4. FastAPI layer
-5. Finnish browser user interface
-6. Reports and receipt management
+1. Authentication and authorization (admin and worker roles)
+2. FastAPI layer
+3. Finnish browser user interface
+4. Reports and receipt storage
 
 ---
 

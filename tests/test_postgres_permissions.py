@@ -232,6 +232,42 @@ def test_grant_app_permissions_removes_default_privileges(app_database, default_
     postgres_permissions.check_app_permissions(cursor, app_user)
 
 
+@pytest.mark.parametrize(
+    ("public_sql", "message"),
+    [
+        (
+            "ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public "
+            "GRANT SELECT ON TABLES TO PUBLIC",
+            "PUBLIC has default privilege SELECT on new tables of .* in a schema",
+        ),
+        (
+            "ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT SELECT ON TABLES TO PUBLIC",
+            "PUBLIC has default privilege SELECT on new tables of .* in all schemas",
+        ),
+        (
+            "ALTER DEFAULT PRIVILEGES FOR ROLE {} GRANT USAGE ON SEQUENCES TO PUBLIC",
+            "PUBLIC has default privilege USAGE on new sequences",
+        ),
+        (
+            "GRANT SELECT (password_hash) ON users TO PUBLIC",
+            "can read users.password_hash",
+        ),
+    ],
+)
+def test_check_app_permissions_rejects_public_privileges(app_database, public_sql, message):
+    cursor, app_user, connect_as_app = app_database
+    owner_user = get_table_owner(cursor)
+
+    cursor.execute(sql.SQL(public_sql).format(sql.Identifier(owner_user)))
+
+    # The fix does not change PUBLIC privileges. The check stops the
+    # installation, so that an administrator removes them.
+    postgres_permissions.grant_app_permissions(cursor, app_user, owner_user)
+
+    with pytest.raises(RuntimeError, match=message):
+        postgres_permissions.check_app_permissions(cursor, app_user)
+
+
 def test_check_app_permissions_rejects_missing_account(app_database):
     cursor, app_user, connect_as_app = app_database
 
@@ -267,7 +303,7 @@ def test_app_account_cannot_change_schema(app_database):
         for statement in forbidden_sql:
             assert_postgres_error(app_cursor, psycopg.errors.InsufficientPrivilege, statement)
 
-    postgres_migrate.validate_schema(cursor, set(range(1, 12)))
+    postgres_migrate.validate_schema(cursor, set(range(1, 13)))
 
 
 def test_app_account_can_run_services(app_database, monkeypatch):

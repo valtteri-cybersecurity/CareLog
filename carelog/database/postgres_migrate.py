@@ -1,3 +1,5 @@
+import re
+
 from carelog.database.postgres_connection import get_postgres_connection
 from carelog.database.postgres_migrations import (
     v001_users,
@@ -11,6 +13,7 @@ from carelog.database.postgres_migrations import (
     v009_visit_scheduling,
     v010_visit_constraints,
     v011_visit_trip_legs,
+    v012_foreign_key_indexes,
 )
 
 
@@ -28,6 +31,7 @@ MIGRATIONS = [
     (9, None, v009_visit_scheduling.upgrade),
     (10, None, v010_visit_constraints.upgrade),
     (11, "visit_trip_legs", v011_visit_trip_legs.upgrade),
+    (12, None, v012_foreign_key_indexes.upgrade),
 ]
 
 
@@ -127,16 +131,27 @@ EXPECTED_V009_COLUMNS = [
 ]
 
 
-# Unique indexes other than the primary key, as pg_get_indexdef() shows
-# them. The users index compares emails without letter case.
-EXPECTED_UNIQUE_INDEXES = {
+# Indexes other than the primary key: version that creates the index,
+# index name, unique, and its key columns as PostgreSQL shows them.
+# The users index compares emails without letter case.
+EXPECTED_INDEXES = {
     "users": [
-        "CREATE UNIQUE INDEX uq_users_email ON public.users "
-        "USING btree (lower((email)::text))",
+        (1, "uq_users_email", True, ["lower(email::text)"]),
+    ],
+    "trips": [
+        (12, "idx_trips_client_id", False, ["client_id"]),
+    ],
+    "visits": [
+        (12, "idx_visits_client_id", False, ["client_id"]),
+    ],
+    "visit_notes": [
+        (12, "idx_visit_notes_visit_id", False, ["visit_id"]),
+    ],
+    "expenses": [
+        (12, "idx_expenses_visit_id", False, ["visit_id"]),
     ],
     "visit_trip_legs": [
-        "CREATE UNIQUE INDEX uq_trip_legs_visit_position "
-        "ON public.visit_trip_legs USING btree (visit_id, \"position\")",
+        (11, "uq_trip_legs_visit_position", True, ["visit_id", "\"position\""]),
     ],
 }
 
@@ -163,7 +178,7 @@ EXPECTED_FOREIGN_KEYS = {
 
 
 # Foreign key rules as single letters in pg_constraint. NO ACTION (a)
-# works like RESTRICT here, as in the MySQL version.
+# works like RESTRICT here.
 FOREIGN_KEY_RULES = {
     "a": "RESTRICT",
     "r": "RESTRICT",
@@ -173,79 +188,64 @@ FOREIGN_KEY_RULES = {
 }
 
 
-# Triggers that keep updated_at current, as pg_get_triggerdef() shows them.
-EXPECTED_TRIGGERS = {
-    "users": [
-        "CREATE TRIGGER trg_users_updated_at BEFORE UPDATE ON public.users "
-        "FOR EACH ROW EXECUTE FUNCTION set_updated_at()",
-    ],
-    "clients": [
-        "CREATE TRIGGER trg_clients_updated_at BEFORE UPDATE ON public.clients "
-        "FOR EACH ROW EXECUTE FUNCTION set_updated_at()",
-    ],
-    "visits": [
-        "CREATE TRIGGER trg_visits_updated_at BEFORE UPDATE ON public.visits "
-        "FOR EACH ROW EXECUTE FUNCTION set_updated_at()",
-    ],
-}
+# Tables whose updated_at is kept current by the trigger
+# trg_<table>_updated_at, which calls set_updated_at().
+UPDATED_AT_TABLES = ("users", "clients", "visits")
+
+# pg_trigger.tgtype of a BEFORE UPDATE FOR EACH ROW trigger:
+# 1 (FOR EACH ROW) + 2 (BEFORE) + 16 (UPDATE).
+BEFORE_UPDATE_ROW_TRIGGER = 19
 
 
-# Expected CHECK constraints, as pg_get_constraintdef() shows them.
-# The user role is a CHECK constraint instead of a MySQL ENUM.
-EXPECTED_V001_CHECKS = {
-    ("users", "chk_users_role"): (
-        "CHECK (((role)::text = ANY ((ARRAY['admin'::character varying, "
-        "'worker'::character varying])::text[])))"
-    ),
-}
-
-
-# Expected CHECK constraints added by migration v008.
-# Keep these definitions consistent with v008_business_constraints.py.
+# CHECK constraints by the migration that creates them:
+# (table, constraint name): the condition. The conditions are written as
+# PostgreSQL stores them (for example IN becomes = ANY), but without the
+# type casts and parentheses it adds; see normalize_check_condition().
+# Keep these consistent with the migration files.
 EXPECTED_CHECKS = {
-    ("clients", "chk_clients_distance"): (
-        "CHECK ((distance_from_home_km >= (0)::numeric))"
-    ),
-    ("services", "chk_services_rate"): (
-        "CHECK ((default_hourly_rate >= (0)::numeric))"
-    ),
-    ("trips", "chk_trips_distance"): "CHECK ((distance_km >= (0)::numeric))",
-    ("visits", "chk_visits_distance"): "CHECK ((distance_km >= (0)::numeric))",
-    ("visits", "chk_visits_price"): "CHECK ((price >= (0)::numeric))",
-    ("visits", "chk_visits_time"): "CHECK ((ended_at >= started_at))",
-    ("visit_notes", "chk_notes_content"): (
-        "CHECK ((TRIM(BOTH FROM content) <> ''::text))"
-    ),
-    ("expenses", "chk_expenses_amount"): "CHECK ((amount > (0)::numeric))",
+    1: {
+        ("users", "chk_users_role"): "role = ANY (ARRAY['admin', 'worker'])",
+    },
+    8: {
+        ("clients", "chk_clients_distance"): "distance_from_home_km >= 0",
+        ("services", "chk_services_rate"): "default_hourly_rate >= 0",
+        ("trips", "chk_trips_distance"): "distance_km >= 0",
+        ("visits", "chk_visits_distance"): "distance_km >= 0",
+        ("visits", "chk_visits_price"): "price >= 0",
+        ("visits", "chk_visits_time"): "ended_at >= started_at",
+        ("visit_notes", "chk_notes_content"): "TRIM(BOTH FROM content) <> ''",
+        ("expenses", "chk_expenses_amount"): "amount > 0",
+    },
+    10: {
+        ("visits", "chk_visits_planned_duration"): "planned_duration_minutes > 0",
+        ("visits", "chk_visits_duration"): "duration_minutes > 0",
+        ("visits", "chk_visits_priority"): "priority >= 1 AND priority <= 3",
+        (
+            "visits",
+            "chk_visits_status",
+        ): "status = ANY (ARRAY['planned', 'completed', 'cancelled'])",
+    },
+    11: {
+        ("visit_trip_legs", "chk_trip_legs_position"): "position > 0",
+        ("visit_trip_legs", "chk_trip_legs_distance"): "distance_km >= 0",
+    },
 }
 
 
-# Expected CHECK constraints added by migration v010.
-# Keep these definitions consistent with v010_visit_constraints.py.
-EXPECTED_V010_CHECKS = {
-    ("visits", "chk_visits_planned_duration"): (
-        "CHECK ((planned_duration_minutes > 0))"
-    ),
-    ("visits", "chk_visits_duration"): "CHECK ((duration_minutes > 0))",
-    ("visits", "chk_visits_priority"): (
-        "CHECK (((priority >= 1) AND (priority <= 3)))"
-    ),
-    ("visits", "chk_visits_status"): (
-        "CHECK (((status)::text = ANY ((ARRAY['planned'::character varying, "
-        "'completed'::character varying, "
-        "'cancelled'::character varying])::text[])))"
-    ),
-}
+def normalize_check_condition(condition):
+    # pg_get_constraintdef() shows for example
+    # CHECK ((amount > (0)::numeric)). Remove the word CHECK, the type
+    # casts (::numeric), parentheses, quotes and spaces, so that only the
+    # condition itself is compared: amount>0. A changed operator, number,
+    # column or value is still a difference.
+    condition = condition.lower()
+    condition = condition.removeprefix("check ")
+    condition = re.sub(r"::[a-z ]+(\[\])?", "", condition)
 
+    for character in ("(", ")", '"', " "):
+        condition = condition.replace(character, "")
 
-# Expected CHECK constraints created together with the table in v011.
-# Keep these definitions consistent with v011_visit_trip_legs.py.
-EXPECTED_V011_CHECKS = {
-    ("visit_trip_legs", "chk_trip_legs_position"): "CHECK ((\"position\" > 0))",
-    ("visit_trip_legs", "chk_trip_legs_distance"): (
-        "CHECK ((distance_km >= (0)::numeric))"
-    ),
-}
+    return condition
 
 
 def check_schema(cursor):
@@ -369,22 +369,43 @@ def validate_table(cursor, table, applied_versions):
     if primary_key != ["id"]:
         raise RuntimeError(f"Invalid primary key in table: {table}")
 
+    # pg_index holds the indexes. pg_get_indexdef(index, k, true) shows
+    # key column number k. An invalid index is not used by PostgreSQL.
     cursor.execute("""
-        SELECT pg_get_indexdef(indexrelid)
-        FROM pg_index
-        WHERE indrelid = %s::regclass
-          AND indisunique
-          AND NOT indisprimary
-        ORDER BY 1
+        SELECT c.relname,
+               i.indisunique,
+               i.indisvalid,
+               ARRAY(
+                   SELECT pg_get_indexdef(i.indexrelid, k, true)
+                   FROM generate_series(1, i.indnkeyatts) AS k
+                   ORDER BY k
+               )
+        FROM pg_index AS i
+        JOIN pg_class AS c
+          ON c.oid = i.indexrelid
+        WHERE i.indrelid = %s::regclass
+          AND NOT i.indisprimary
+        ORDER BY c.relname
     """, (table,))
 
-    unique_indexes = []
+    indexes = []
 
-    for row in cursor.fetchall():
-        unique_indexes.append(row[0])
+    for name, unique, valid, keys in cursor.fetchall():
+        if not valid:
+            raise RuntimeError(f"Invalid index in table: {table}.{name}")
 
-    if unique_indexes != EXPECTED_UNIQUE_INDEXES.get(table, []):
-        raise RuntimeError(f"Invalid unique constraints in table: {table}")
+        indexes.append((name, unique, keys))
+
+    expected_indexes = []
+
+    for version, name, unique, keys in EXPECTED_INDEXES.get(table, []):
+        if version in applied_versions:
+            expected_indexes.append((name, unique, keys))
+
+    expected_indexes.sort()
+
+    if indexes != expected_indexes:
+        raise RuntimeError(f"Invalid indexes in table: {table}")
 
     # contype 'f' is a foreign key. Every CareLog foreign key has one column.
     cursor.execute("""
@@ -449,22 +470,33 @@ def validate_table(cursor, table, applied_versions):
     if foreign_keys != expected_foreign_keys:
         raise RuntimeError(f"Invalid foreign keys in table: {table}")
 
-    # Disabled triggers (tgenabled 'D') would not update updated_at.
+    # pg_trigger holds the triggers and pg_proc the function they call.
+    # tgenabled is 'O' for an enabled trigger. A disabled trigger would
+    # not update updated_at.
     cursor.execute("""
-        SELECT pg_get_triggerdef(oid)
-        FROM pg_trigger
-        WHERE tgrelid = %s::regclass
-          AND NOT tgisinternal
-          AND tgenabled <> 'D'
-        ORDER BY tgname
+        SELECT t.tgname, p.proname, t.tgtype, t.tgenabled
+        FROM pg_trigger AS t
+        JOIN pg_proc AS p
+          ON p.oid = t.tgfoid
+        WHERE t.tgrelid = %s::regclass
+          AND NOT t.tgisinternal
+        ORDER BY t.tgname
     """, (table,))
 
-    triggers = []
+    triggers = cursor.fetchall()
+    expected_triggers = []
 
-    for row in cursor.fetchall():
-        triggers.append(row[0])
+    if table in UPDATED_AT_TABLES:
+        expected_triggers.append(
+            (
+                f"trg_{table}_updated_at",
+                "set_updated_at",
+                BEFORE_UPDATE_ROW_TRIGGER,
+                "O",
+            )
+        )
 
-    if triggers != EXPECTED_TRIGGERS.get(table, []):
+    if triggers != expected_triggers:
         raise RuntimeError(f"Invalid triggers in table: {table}")
 
 
@@ -484,32 +516,26 @@ def validate_business_constraints(cursor, applied_versions):
     # other CHECK constraints are allowed.
     expected_checks = {}
 
-    if 1 in applied_versions:
-        expected_checks.update(EXPECTED_V001_CHECKS)
-
-    if 8 in applied_versions:
-        expected_checks.update(EXPECTED_CHECKS)
-
-    if 10 in applied_versions:
-        expected_checks.update(EXPECTED_V010_CHECKS)
-
-    if 11 in applied_versions:
-        expected_checks.update(EXPECTED_V011_CHECKS)
+    for version, checks in EXPECTED_CHECKS.items():
+        if version in applied_versions:
+            expected_checks.update(checks)
 
     found = set()
 
     for table, name, validated, definition in cursor.fetchall():
         key = (table, name)
-        expected = expected_checks.get(key)
+        expected_condition = expected_checks.get(key)
 
-        if expected is None:
+        if expected_condition is None:
             raise RuntimeError(f"Unexpected CHECK constraint: {table}.{name}")
 
-        if not validated or definition != expected:
+        actual = normalize_check_condition(definition)
+        expected = normalize_check_condition(expected_condition)
+
+        if not validated or actual != expected:
             raise RuntimeError(
                 f"Invalid CHECK constraint: {table}.{name} "
-                f"(expected={expected!r}, actual={definition!r}, "
-                f"validated={validated!r})"
+                f"(expected={expected!r}, actual={actual!r})"
             )
 
         found.add(key)

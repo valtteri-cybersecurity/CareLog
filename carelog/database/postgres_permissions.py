@@ -145,23 +145,33 @@ def check_app_permissions(cursor, app_user):
             )
 
     # Default privileges of any account must not give the application
-    # privileges on tables (r) or sequences (S) created later. A row with
-    # no schema (defaclnamespace 0) applies to all schemas.
+    # privileges on tables (r) or sequences (S) created later. Grants to
+    # PUBLIC (grantee 0) reach every account, so they are checked too.
+    # PostgreSQL gives PUBLIC no default privileges on tables or sequences,
+    # so such a row is always an added grant. A row with no schema
+    # (defaclnamespace 0) applies to all schemas.
     cursor.execute("""
-        SELECT r.rolname, d.defaclnamespace, d.defaclobjtype, a.privilege_type
+        SELECT a.grantee, r.rolname, d.defaclnamespace, d.defaclobjtype,
+               a.privilege_type
         FROM pg_default_acl AS d
         JOIN pg_roles AS r
           ON r.oid = d.defaclrole
         CROSS JOIN LATERAL aclexplode(d.defaclacl) AS a
-        WHERE a.grantee = (SELECT oid FROM pg_roles WHERE rolname = %s)
+        WHERE (a.grantee = (SELECT oid FROM pg_roles WHERE rolname = %s)
+               OR a.grantee = 0)
           AND d.defaclobjtype IN ('r', 'S')
-        ORDER BY r.rolname, d.defaclobjtype, a.privilege_type
+        ORDER BY a.grantee, r.rolname, d.defaclobjtype, a.privilege_type
     """, (app_user,))
 
     result = cursor.fetchone()
 
     if result is not None:
-        owner, schema, object_type, privilege = result
+        grantee, owner, schema, object_type, privilege = result
+
+        if grantee == 0:
+            receiver = "PUBLIC"
+        else:
+            receiver = "Application account"
 
         if object_type == "r":
             objects = "tables"
@@ -173,9 +183,12 @@ def check_app_permissions(cursor, app_user):
         else:
             scope = "in a schema"
 
+        # The migration account cannot safely remove grants of other
+        # accounts or grants to PUBLIC, so an administrator must do it.
         raise RuntimeError(
-            f"Application account has default privilege {privilege} on new "
-            f"{objects} of {owner} {scope}. Manual review required"
+            f"{receiver} has default privilege {privilege} on new "
+            f"{objects} of {owner} {scope}. An administrator must remove it "
+            "with ALTER DEFAULT PRIVILEGES. Manual review required"
         )
 
     # Every table in the schema, including schema_migrations, must have

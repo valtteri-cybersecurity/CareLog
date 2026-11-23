@@ -83,9 +83,8 @@ PostgreSQL:n vahvuus, jota DSQL ei tarjoa. DSQL-versiossa:
 
 - jokainen DDL-lause ajetaan omassa transaktiossaan ja versio merkitään
   `schema_migrations`-tauluun erillisessä transaktiossa,
-- migraation pitää taas kestää keskeytys (sama tarve kuin MySQL-versiossa:
-  "jos rajoite on jo olemassa, ohita"),
-- v001:n ja v011:n uniikki-indeksit luodaan `ASYNC`-muodossa ja odotetaan
+- migraation pitää kestää keskeytys ("jos rajoite on jo olemassa, ohita"),
+- v001:n ja v011:n uniikki-indeksit sekä v012:n vierasavainindeksit luodaan `ASYNC`-muodossa ja odotetaan
   valmiiksi ennen version merkitsemistä,
 - v008:n ja v010:n CHECK-rajoitteet lisätään `NOT VALID` -muodossa ja
   validoidaan erikseen. Uudessa tyhjässä tietokannassa rajoitteet voi
