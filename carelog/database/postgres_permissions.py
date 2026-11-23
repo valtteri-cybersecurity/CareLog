@@ -13,8 +13,8 @@ APP_TABLE_PRIVILEGES = {
     "services": ("SELECT", "INSERT", "UPDATE"),
     "trips": ("SELECT", "INSERT", "UPDATE", "DELETE"),
     "visits": ("SELECT", "INSERT", "UPDATE"),
-    "visit_notes": ("SELECT", "INSERT", "UPDATE", "DELETE"),
-    "expenses": ("SELECT", "INSERT", "UPDATE", "DELETE"),
+    "visit_notes": ("SELECT", "INSERT", "UPDATE"),
+    "expenses": ("SELECT", "INSERT", "UPDATE"),
     "visit_trip_legs": ("SELECT", "INSERT", "DELETE"),
 }
 
