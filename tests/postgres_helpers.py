@@ -1,3 +1,6 @@
+import threading
+import time
+
 import psycopg
 import pytest
 
@@ -54,3 +57,46 @@ def insert_visit(cursor):
         (client_id, service_id),
     )
     return cursor.fetchone()[0]
+
+
+def start_in_thread(function, *args, **kwargs):
+    # Runs the service call in its own thread. done is set when the call
+    # has returned or raised, and outcome holds the result or the error.
+    outcome = {}
+    done = threading.Event()
+
+    def run():
+        try:
+            outcome["result"] = function(*args, **kwargs)
+        except Exception as error:
+            outcome["error"] = error
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=run)
+    thread.start()
+
+    return thread, done, outcome
+
+
+def wait_until_waiting_for_lock(cursor, timeout_seconds=10):
+    # Waits until a session of this test database waits for a row lock.
+    # The time limit stops the test instead of hanging.
+    deadline = time.monotonic() + timeout_seconds
+
+    while time.monotonic() < deadline:
+        cursor.execute(
+            """
+            SELECT COUNT(*)
+            FROM pg_stat_activity
+            WHERE datname = current_database()
+              AND wait_event_type = 'Lock'
+            """
+        )
+
+        if cursor.fetchone()[0] > 0:
+            return
+
+        time.sleep(0.02)
+
+    pytest.fail("The service call did not wait for the row lock")

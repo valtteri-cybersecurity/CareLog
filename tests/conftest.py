@@ -16,6 +16,7 @@ from carelog.database.postgres_migrations import (
     v009_visit_scheduling as postgres_v009_visit_scheduling,
     v010_visit_constraints as postgres_v010_visit_constraints,
     v011_visit_trip_legs as postgres_v011_visit_trip_legs,
+    v013_visit_note_history as postgres_v013_visit_note_history,
 )
 
 
@@ -175,7 +176,10 @@ def postgres_cursor_with_visit_scheduling(postgres_cursor_with_visits):
 
 @pytest.fixture
 def postgres_cursor_with_visit_notes(postgres_cursor_with_visit_scheduling):
+    # v013 adds updated_at and the edit history of notes. It needs the
+    # users table of v001 for edited_by_user_id.
     postgres_v006_visit_notes.upgrade(postgres_cursor_with_visit_scheduling)
+    postgres_v013_visit_note_history.upgrade(postgres_cursor_with_visit_scheduling)
     return postgres_cursor_with_visit_scheduling
 
 

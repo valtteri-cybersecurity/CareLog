@@ -1,4 +1,4 @@
-from math import isfinite
+from decimal import Decimal
 
 from carelog.database.repositories.update_client import (
     ALLOWED_FIELDS,
@@ -9,6 +9,7 @@ from carelog.database.repositories.insert_client import insert_client
 from carelog.database.repositories.select_client import select_client
 from carelog.database.repositories.select_clients import select_clients
 from carelog.database.repositories.archive_client import archive_client_record
+from carelog.services.trips import validate_distance_km
 
 
 def validate_postal_code(postal_code: str | None) -> str | None:
@@ -40,7 +41,7 @@ def add_client(
         street_address: str | None = None,
         postal_code: str | None = None,
         city: str | None = None,
-        distance_from_home_km: float | int | None = None
+        distance_from_home_km: Decimal | float | int | None = None
     ) -> int:
     
 
@@ -147,22 +148,10 @@ def add_client(
 
 
     # Distance from home validation
+    # The same rules as for trips: 0 or more, at most two decimals, so
+    # the DECIMAL(10,2) column never rounds the value.
 
-    if distance_from_home_km is not None:
-        if isinstance(distance_from_home_km, bool):
-            raise ValueError("Distance must be a number")
-
-        if not isinstance(distance_from_home_km, (int, float)):
-            raise ValueError("Distance must be a number")
-
-        if not isfinite(distance_from_home_km):
-            raise ValueError("Distance must be finite")
-
-        if distance_from_home_km <= 0:
-            raise ValueError("Distance must be positive")
-
-        if distance_from_home_km > 99999999.99:
-            raise ValueError("Distance exceeds database limit")
+    distance_from_home_km = validate_distance_km(distance_from_home_km)
 
 
     connection = None
@@ -266,24 +255,7 @@ def update_client(client_id: int, changes: dict) -> bool:
         # Distance validation
 
         if field == "distance_from_home_km":
-
-            if value is not None:
-                if isinstance(value, bool):
-                    raise ValueError("Invalid distance type")
-
-                if not isinstance(value, (int, float)):
-                    raise ValueError("Invalid distance type")
-
-                if not isfinite(value):
-                    raise ValueError("Distance must be finite")
-
-                if value <= 0:
-                    raise ValueError("Distance must be positive")
-
-                if value > 99999999.99:
-                    raise ValueError("Distance exceeds limit")
-
-            validated_changes[field] = value
+            validated_changes[field] = validate_distance_km(value)
             continue
 
         # Postal code validation

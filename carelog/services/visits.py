@@ -306,7 +306,9 @@ def add_planned_visit(
         cursor = connection.cursor()
 
         # New visits are not allowed for missing or archived clients.
-        client = select_client(cursor, client_id)
+        # The client row is locked until commit or rollback, so the client
+        # cannot be archived between this check and the insert below.
+        client = select_client(cursor, client_id, for_update=True)
 
         if client is None:
             raise ValueError("Client not found")
@@ -417,7 +419,9 @@ def add_completed_visit(
         cursor = connection.cursor()
 
         # New visits are not allowed for missing or archived clients.
-        client = select_client(cursor, client_id)
+        # The client row is locked until commit or rollback, so the client
+        # cannot be archived between this check and the insert below.
+        client = select_client(cursor, client_id, for_update=True)
 
         if client is None:
             raise ValueError("Client not found")

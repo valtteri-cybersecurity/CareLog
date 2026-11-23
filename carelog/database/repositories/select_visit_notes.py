@@ -5,7 +5,7 @@ def select_visit_notes(cursor: Cursor, visit_id: int) -> list[dict]:
 
     # Oldest first. Notes added in the same second are ordered by id.
     sql = """
-        SELECT id, visit_id, content, created_at
+        SELECT id, visit_id, content, created_at, updated_at
         FROM visit_notes
         WHERE visit_id = %s
         ORDER BY created_at ASC, id ASC

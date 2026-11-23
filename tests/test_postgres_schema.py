@@ -194,7 +194,11 @@ def test_check_constraints_reject_invalid_values(migrated_cursor):
         ("UPDATE visits SET duration_minutes = 0 WHERE id = %s", (visit_id,)),
         ("UPDATE visits SET priority = 0 WHERE id = %s", (visit_id,)),
         ("UPDATE visits SET priority = 4 WHERE id = %s", (visit_id,)),
+        ("UPDATE visits SET priority = -1 WHERE id = %s", (visit_id,)),
         ("UPDATE visits SET status = 'unknown' WHERE id = %s", (visit_id,)),
+        ("UPDATE visits SET status = 'pending' WHERE id = %s", (visit_id,)),
+        ("UPDATE visits SET status = 'archived' WHERE id = %s", (visit_id,)),
+        ("UPDATE visits SET status = '' WHERE id = %s", (visit_id,)),
         ("INSERT INTO visit_notes (visit_id, content) VALUES (%s, '   ')", (visit_id,)),
         (
             "INSERT INTO expenses (visit_id, expense_date, amount, category) "
@@ -257,6 +261,38 @@ def test_check_constraints_accept_valid_values(migrated_cursor):
     cursor.execute("SELECT status, priority FROM visits WHERE id = %s", (visit_id,))
 
     assert cursor.fetchone() == ("completed", 3)
+
+
+def test_visit_priority_and_status_values(migrated_cursor):
+    cursor = migrated_cursor
+
+    visit_id = insert_visit(cursor)
+
+    # Every allowed value is accepted
+    for priority in (1, 2, 3):
+        cursor.execute("UPDATE visits SET priority = %s WHERE id = %s", (priority, visit_id))
+
+    for status in ("planned", "completed", "cancelled"):
+        cursor.execute("UPDATE visits SET status = %s WHERE id = %s", (status, visit_id))
+
+    # NULL passes a CHECK constraint, so NOT NULL is needed as well
+    invalid_values = [
+        ("UPDATE visits SET priority = NULL WHERE id = %s", (visit_id,)),
+        ("UPDATE visits SET status = NULL WHERE id = %s", (visit_id,)),
+        (
+            "INSERT INTO visits (client_id, service_id, priority, status) "
+            "SELECT client_id, service_id, NULL, 'planned' FROM visits WHERE id = %s",
+            (visit_id,),
+        ),
+        (
+            "INSERT INTO visits (client_id, service_id, priority, status) "
+            "SELECT client_id, service_id, 2, NULL FROM visits WHERE id = %s",
+            (visit_id,),
+        ),
+    ]
+
+    for sql, values in invalid_values:
+        assert_postgres_error(cursor, psycopg.errors.NotNullViolation, sql, values)
 
 
 def test_column_limits(migrated_cursor):

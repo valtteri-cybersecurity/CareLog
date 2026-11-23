@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import pytest
 
 from carelog.services.clients import add_client, get_client, get_clients, update_client, archive_client
@@ -535,9 +537,10 @@ def test_add_client_rejects_invalid_distance_type():
         add_client("Hilma", "Virtanen", distance_from_home_km="3.5")
 
 
-def test_add_client_rejects_zero_distance():
-    with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", distance_from_home_km=0.0)
+def test_add_client_rejects_too_many_decimals_in_distance():
+    # DECIMAL(10,2) would round 4.567 to 4.57 without an error
+    with pytest.raises(ValueError, match="two decimal places"):
+        add_client("Hilma", "Virtanen", distance_from_home_km=4.567)
 
 
 def test_add_client_rejects_negative_distance():
@@ -818,6 +821,50 @@ def test_add_client_saves_distance(
     )
 
     assert str(cursor.fetchone()[0]) == "3.50"
+
+
+def test_client_distance_can_be_zero(
+    postgres_cursor_with_clients,
+    connect_to_test_postgres,
+    monkeypatch
+):
+    cursor = postgres_cursor_with_clients
+
+    cursor.execute("SELECT current_database()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_postgres(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_postgres_connection",
+        get_test_connection
+    )
+
+    # 0 km is allowed, as in the database CHECK constraint
+    client_id = add_client("Hilma", "Virtanen", distance_from_home_km=0)
+
+    cursor.execute(
+        "SELECT distance_from_home_km FROM clients WHERE id = %s",
+        (client_id,)
+    )
+    assert str(cursor.fetchone()[0]) == "0.00"
+
+    assert update_client(client_id, {"distance_from_home_km": Decimal("4.57")}) is True
+
+    cursor.execute(
+        "SELECT distance_from_home_km FROM clients WHERE id = %s",
+        (client_id,)
+    )
+    assert cursor.fetchone()[0] == Decimal("4.57")
+
+    assert update_client(client_id, {"distance_from_home_km": 0.0}) is True
+
+    cursor.execute(
+        "SELECT distance_from_home_km FROM clients WHERE id = %s",
+        (client_id,)
+    )
+    assert str(cursor.fetchone()[0]) == "0.00"
 
 
 def test_add_client_saves_null_distance(
@@ -1152,8 +1199,9 @@ def test_update_client_rejects_empty_name():
 
 
 def test_update_client_rejects_invalid_distance():
-    with pytest.raises(ValueError):
-        update_client(1, {"distance_from_home_km": -5})
+    for distance in (-5, 4.567, "3.5", True, float("inf"), 100000000):
+        with pytest.raises(ValueError):
+            update_client(1, {"distance_from_home_km": distance})
 
 
 def test_update_client_changes_city(

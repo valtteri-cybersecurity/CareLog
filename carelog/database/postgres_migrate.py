@@ -14,6 +14,7 @@ from carelog.database.postgres_migrations import (
     v010_visit_constraints,
     v011_visit_trip_legs,
     v012_foreign_key_indexes,
+    v013_visit_note_history,
 )
 
 
@@ -32,6 +33,7 @@ MIGRATIONS = [
     (10, None, v010_visit_constraints.upgrade),
     (11, "visit_trip_legs", v011_visit_trip_legs.upgrade),
     (12, None, v012_foreign_key_indexes.upgrade),
+    (13, "visit_note_history", v013_visit_note_history.upgrade),
 ]
 
 
@@ -118,6 +120,14 @@ EXPECTED_COLUMNS = {
         ("destination", "character varying(255)", "NO", None),
         ("distance_km", "numeric(10,2)", "YES", None),
     ],
+    "visit_note_history": [
+        ("id", "integer", "NO", None),
+        ("note_id", "integer", "NO", None),
+        ("old_content", "text", "NO", None),
+        ("new_content", "text", "NO", None),
+        ("edited_at", "timestamp without time zone", "NO", UTC_NOW),
+        ("edited_by_user_id", "integer", "YES", None),
+    ],
 }
 
 
@@ -128,6 +138,12 @@ EXPECTED_V009_COLUMNS = [
     ("completed_date", "date", "YES", None),
     ("planned_duration_minutes", "integer", "YES", None),
     ("duration_minutes", "integer", "YES", None),
+]
+
+# Column added to the end of the visit_notes table by migration v013.
+# Keep this definition consistent with v013_visit_note_history.py.
+EXPECTED_V013_COLUMNS = [
+    ("updated_at", "timestamp without time zone", "NO", UTC_NOW),
 ]
 
 
@@ -153,6 +169,9 @@ EXPECTED_INDEXES = {
     "visit_trip_legs": [
         (11, "uq_trip_legs_visit_position", True, ["visit_id", "\"position\""]),
     ],
+    "visit_note_history": [
+        (13, "idx_visit_note_history_note_id", False, ["note_id"]),
+    ],
 }
 
 
@@ -173,6 +192,10 @@ EXPECTED_FOREIGN_KEYS = {
     ],
     "visit_trip_legs": [
         ("visit_id", "visits", "id", "RESTRICT", "RESTRICT"),
+    ],
+    "visit_note_history": [
+        ("edited_by_user_id", "users", "id", "RESTRICT", "RESTRICT"),
+        ("note_id", "visit_notes", "id", "RESTRICT", "RESTRICT"),
     ],
 }
 
@@ -195,6 +218,12 @@ UPDATED_AT_TABLES = ("users", "clients", "visits")
 # pg_trigger.tgtype of a BEFORE UPDATE FOR EACH ROW trigger:
 # 1 (FOR EACH ROW) + 2 (BEFORE) + 16 (UPDATE).
 BEFORE_UPDATE_ROW_TRIGGER = 19
+
+# The note history trigger of migration v013 and its function. Keep these
+# consistent with v013_visit_note_history.py.
+NOTE_HISTORY_TRIGGER = "trg_visit_notes_history"
+NOTE_HISTORY_FUNCTION = "save_visit_note_history"
+NOTE_HISTORY_SEARCH_PATH = ["search_path=pg_catalog, pg_temp"]
 
 
 # CHECK constraints by the migration that creates them:
@@ -346,6 +375,9 @@ def validate_table(cursor, table, applied_versions):
     if table == "visits" and 9 in applied_versions:
         expected_columns = EXPECTED_COLUMNS["visits"] + EXPECTED_V009_COLUMNS
 
+    if table == "visit_notes" and 13 in applied_versions:
+        expected_columns = EXPECTED_COLUMNS["visit_notes"] + EXPECTED_V013_COLUMNS
+
     if columns != expected_columns:
         raise RuntimeError(f"Invalid columns in table: {table}")
 
@@ -472,7 +504,7 @@ def validate_table(cursor, table, applied_versions):
 
     # pg_trigger holds the triggers and pg_proc the function they call.
     # tgenabled is 'O' for an enabled trigger. A disabled trigger would
-    # not update updated_at.
+    # not update updated_at or save the note history.
     cursor.execute("""
         SELECT t.tgname, p.proname, t.tgtype, t.tgenabled
         FROM pg_trigger AS t
@@ -496,8 +528,60 @@ def validate_table(cursor, table, applied_versions):
             )
         )
 
+    if table == "visit_notes" and 13 in applied_versions:
+        expected_triggers.append(
+            (
+                NOTE_HISTORY_TRIGGER,
+                NOTE_HISTORY_FUNCTION,
+                BEFORE_UPDATE_ROW_TRIGGER,
+                "O",
+            )
+        )
+
     if triggers != expected_triggers:
         raise RuntimeError(f"Invalid triggers in table: {table}")
+
+
+def validate_note_history_function(cursor):
+    # The history function runs with the rights of its owner (SECURITY
+    # DEFINER), so its settings are checked:
+    # - the owner is the owner of the history table, not another account
+    # - the search path is fixed (proconfig), so the caller cannot change
+    #   which tables and functions it finds
+    # - only the owner may execute it. proacl NULL means the default
+    #   privileges, where PUBLIC may execute every new function.
+    cursor.execute("""
+        SELECT p.prosecdef,
+               p.proconfig,
+               p.proowner = r.relowner,
+               p.proacl IS NOT NULL,
+               EXISTS (
+                   SELECT 1
+                   FROM aclexplode(p.proacl) AS a
+                   WHERE a.grantee <> p.proowner
+               )
+        FROM pg_proc AS p
+        JOIN pg_class AS r
+          ON r.oid = 'visit_note_history'::regclass
+        WHERE p.pronamespace = current_schema()::regnamespace
+          AND p.proname = %s
+    """, (NOTE_HISTORY_FUNCTION,))
+
+    rows = cursor.fetchall()
+
+    if len(rows) != 1:
+        raise RuntimeError(f"Invalid function: {NOTE_HISTORY_FUNCTION}")
+
+    security_definer, config, owner_matches, has_acl, others_can_execute = rows[0]
+
+    if not security_definer or config != NOTE_HISTORY_SEARCH_PATH:
+        raise RuntimeError(f"Invalid function settings: {NOTE_HISTORY_FUNCTION}")
+
+    if not owner_matches:
+        raise RuntimeError(f"Invalid function owner: {NOTE_HISTORY_FUNCTION}")
+
+    if not has_acl or others_can_execute:
+        raise RuntimeError(f"Invalid function privileges: {NOTE_HISTORY_FUNCTION}")
 
 
 def validate_business_constraints(cursor, applied_versions):
@@ -550,6 +634,9 @@ def validate_schema(cursor, applied_versions):
     for version, table, upgrade in MIGRATIONS:
         if table is not None and version in applied_versions:
             validate_table(cursor, table, applied_versions)
+
+    if 13 in applied_versions:
+        validate_note_history_function(cursor)
 
     validate_business_constraints(cursor, applied_versions)
 

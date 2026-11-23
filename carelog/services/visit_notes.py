@@ -1,6 +1,7 @@
 from carelog.database.postgres_connection import get_postgres_connection
 from carelog.database.repositories.insert_visit_note import insert_visit_note
 from carelog.database.repositories.select_visit_notes import select_visit_notes
+from carelog.database.repositories.select_visit_note_history import select_visit_note_history
 from carelog.database.repositories.update_visit_note import update_visit_note_record
 
 
@@ -97,6 +98,41 @@ def get_visit_notes(visit_id: int) -> list[dict]:
         notes = select_visit_notes(cursor, visit_id)
 
         return notes
+
+    finally:
+        if cursor is not None:
+            cursor.close()
+
+        if connection is not None:
+            connection.close()
+
+
+def get_visit_note_history(note_id: int) -> list[dict]:
+
+    # Note ID validation
+    # The history is saved by a trigger in the database whenever the
+    # content of a note changes. A note that was never edited, or does
+    # not exist, has an empty history.
+    # edited_by_user_id is None until CareLog has authentication.
+
+    if type(note_id) is not int:
+        raise ValueError("Note ID must be an integer")
+
+    if note_id <= 0:
+        raise ValueError("Note ID must be positive")
+
+    # Database operation
+
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_postgres_connection()
+        cursor = connection.cursor()
+
+        history = select_visit_note_history(cursor, note_id)
+
+        return history
 
     finally:
         if cursor is not None:
