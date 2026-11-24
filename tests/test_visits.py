@@ -13,6 +13,7 @@ from carelog.services.visits import (
     add_completed_visit,
     add_planned_visit,
     cancel_visit,
+    change_visit_worker,
     complete_visit,
     get_client_visits,
     get_planned_visits,
@@ -20,10 +21,26 @@ from carelog.services.visits import (
     get_week_visits,
     update_visit,
 )
-from tests.postgres_helpers import start_in_thread, wait_until_waiting_for_lock
+from tests.postgres_helpers import (
+    fake_active_user,
+    start_in_thread,
+    wait_until_waiting_for_lock,
+)
 
 
 HELSINKI = ZoneInfo("Europe/Helsinki")
+
+
+@pytest.fixture(autouse=True)
+def block_real_database(monkeypatch):
+
+    # A test that does not replace the connection with the test database
+    # must never reach the real database.
+
+    def connection_not_allowed():
+        raise RuntimeError("Unexpected database connection in a test")
+
+    monkeypatch.setattr("carelog.services.visits.get_postgres_connection", connection_not_allowed)
 
 
 # ADD PLANNED VISIT TESTS
@@ -42,6 +59,7 @@ def test_add_planned_visit_rejects_invalid_ids():
     for client_id, service_id in invalid_ids:
         with pytest.raises(ValueError):
             add_planned_visit(
+                1,
                 client_id,
                 service_id,
                 planned_week=date(2026, 11, 23)
@@ -61,6 +79,7 @@ def test_add_planned_visit_rejects_invalid_priority(monkeypatch):
             add_planned_visit(
                 1,
                 1,
+                1,
                 planned_week=date(2026, 11, 23),
                 priority=priority
             )
@@ -70,6 +89,7 @@ def test_add_planned_visit_rejects_invalid_duration():
     for duration in (0, -30, True, 1.5, "60"):
         with pytest.raises(ValueError):
             add_planned_visit(
+                1,
                 1,
                 1,
                 planned_week=date(2026, 11, 23),
@@ -101,11 +121,12 @@ def test_add_planned_visit_rejects_invalid_schedule():
 
     for schedule in invalid_schedules:
         with pytest.raises(ValueError):
-            add_planned_visit(1, 1, **schedule)
+            add_planned_visit(1, 1, 1, **schedule)
 
 
 def test_add_planned_visit_saves_week_only(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -123,20 +144,21 @@ def test_add_planned_visit_saves_week_only(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_week=date(2026, 11, 23),
@@ -183,6 +205,7 @@ def test_add_planned_visit_saves_week_only(
 
 def test_add_planned_visit_saves_date_without_time(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -200,20 +223,21 @@ def test_add_planned_visit_saves_date_without_time(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_date=date(2026, 11, 25),
@@ -243,6 +267,7 @@ def test_add_planned_visit_saves_date_without_time(
 
 def test_add_planned_visit_saves_exact_time_in_utc(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -260,21 +285,22 @@ def test_add_planned_visit_saves_exact_time_in_utc(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     # 25.11.2026 at 10.00 in Helsinki is 08.00 UTC
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_at=datetime(2026, 11, 25, 10, 0, tzinfo=HELSINKI),
@@ -284,6 +310,7 @@ def test_add_planned_visit_saves_exact_time_in_utc(
     # Monday 30.11.2026 at 00.30 in Helsinki is still Sunday in UTC.
     # The week and date must follow the local day.
     early_visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_at=datetime(2026, 11, 30, 0, 30, tzinfo=HELSINKI)
@@ -317,6 +344,7 @@ def test_add_planned_visit_saves_exact_time_in_utc(
 
 def test_add_planned_visit_saves_null_duration(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -334,20 +362,21 @@ def test_add_planned_visit_saves_null_duration(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_week=date(2026, 11, 23),
@@ -369,6 +398,7 @@ def test_add_planned_visit_saves_null_duration(
 
 def test_add_planned_visit_rejects_missing_or_archived_client(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -387,24 +417,25 @@ def test_add_planned_visit_rejects_missing_or_archived_client(
 
     cursor.execute(
         """
-        INSERT INTO clients (first_name, last_name, archived_at)
-        VALUES (%s, %s, CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+        INSERT INTO clients (first_name, last_name, archived_at, created_by_user_id)
+        VALUES (%s, %s, CURRENT_TIMESTAMP AT TIME ZONE 'UTC', %s)
         RETURNING id
         """,
-        ("Arkistoitu", "Asiakas")
+        ("Arkistoitu", "Asiakas", user_ids["worker"])
     )
 
     archived_client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     with pytest.raises(ValueError, match="archived"):
         add_planned_visit(
+            user_ids["worker"],
             archived_client_id,
             service_id,
             planned_week=date(2026, 11, 23)
@@ -412,6 +443,7 @@ def test_add_planned_visit_rejects_missing_or_archived_client(
 
     with pytest.raises(ValueError, match="not found"):
         add_planned_visit(
+            user_ids["worker"],
             999999,
             service_id,
             planned_week=date(2026, 11, 23)
@@ -424,6 +456,7 @@ def test_add_planned_visit_rejects_missing_or_archived_client(
 
 def test_add_planned_visit_rolls_back_on_error(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -437,6 +470,8 @@ def test_add_planned_visit_rolls_back_on_error(
 
     def insert_then_fail(
         cursor,
+        user_id,
+        created_by_user_id,
         client_id,
         service_id,
         status,
@@ -449,8 +484,8 @@ def test_add_planned_visit_rolls_back_on_error(
         price=None
     ):
         cursor.execute(
-            "INSERT INTO visits (client_id, service_id) VALUES (%s, %s)",
-            (client_id, service_id)
+            "INSERT INTO visits (client_id, service_id, user_id, created_by_user_id) VALUES (%s, %s, %s, %s)",
+            (client_id, service_id, user_id, created_by_user_id)
         )
 
         raise RuntimeError("Simulated insert failure")
@@ -466,21 +501,22 @@ def test_add_planned_visit_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     with pytest.raises(RuntimeError, match="Simulated insert failure"):
         add_planned_visit(
+            user_ids["worker"],
             client_id,
             service_id,
             planned_week=date(2026, 11, 23)
@@ -492,6 +528,9 @@ def test_add_planned_visit_rolls_back_on_error(
 
 
 def test_add_planned_visit_closes_connection_on_error(monkeypatch):
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.visits.get_active_user", fake_active_user)
+
 
     class FakeCursor:
         def __init__(self):
@@ -534,7 +573,7 @@ def test_add_planned_visit_closes_connection_on_error(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Simulated select failure"):
-        add_planned_visit(1, 1, planned_week=date(2026, 11, 23))
+        add_planned_visit(1, 1, 1, planned_week=date(2026, 11, 23))
 
     assert connection.rolled_back is True
     assert connection.test_cursor.closed is True
@@ -558,6 +597,7 @@ def test_add_completed_visit_rejects_invalid_ids():
     for client_id, service_id in invalid_ids:
         with pytest.raises(ValueError):
             add_completed_visit(
+                1,
                 client_id,
                 service_id,
                 completed_date=date(2026, 11, 18)
@@ -600,13 +640,14 @@ def test_add_completed_visit_rejects_invalid_dates_and_times():
 
     for values in invalid_values:
         with pytest.raises(ValueError):
-            add_completed_visit(1, 1, **values)
+            add_completed_visit(1, 1, 1, **values)
 
 
 def test_add_completed_visit_rejects_invalid_or_conflicting_duration():
     for duration in (0, -30, True, 1.5, "90"):
         with pytest.raises(ValueError):
             add_completed_visit(
+                1,
                 1,
                 1,
                 completed_date=date(2026, 11, 18),
@@ -618,6 +659,7 @@ def test_add_completed_visit_rejects_invalid_or_conflicting_duration():
         add_completed_visit(
             1,
             1,
+            1,
             started_at=datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
             ended_at=datetime(2026, 11, 18, 11, 30, tzinfo=HELSINKI),
             duration_minutes=60
@@ -627,6 +669,7 @@ def test_add_completed_visit_rejects_invalid_or_conflicting_duration():
     # wall clock is only 60 minutes of real time.
     with pytest.raises(ValueError, match="Duration does not match"):
         add_completed_visit(
+            1,
             1,
             1,
             started_at=datetime(2026, 3, 29, 2, 30, tzinfo=HELSINKI),
@@ -654,6 +697,7 @@ def test_add_completed_visit_rejects_invalid_distance_and_price():
             add_completed_visit(
                 1,
                 1,
+                1,
                 completed_date=date(2026, 11, 18),
                 **values
             )
@@ -661,6 +705,7 @@ def test_add_completed_visit_rejects_invalid_distance_and_price():
 
 def test_add_completed_visit_saves_date_only(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -678,20 +723,21 @@ def test_add_completed_visit_saves_date_only(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     visit_id = add_completed_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         completed_date=date(2026, 11, 18)
@@ -737,6 +783,7 @@ def test_add_completed_visit_saves_date_only(
 
 def test_add_completed_visit_saves_date_and_duration(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -754,20 +801,21 @@ def test_add_completed_visit_saves_date_and_duration(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     visit_id = add_completed_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         completed_date=date(2026, 11, 18),
@@ -801,6 +849,7 @@ def test_add_completed_visit_saves_date_and_duration(
 
 def test_add_completed_visit_saves_exact_times_in_utc(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -818,21 +867,22 @@ def test_add_completed_visit_saves_exact_times_in_utc(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     # Seconds are dropped, so 10.00–11.30 is exactly 90 minutes
     visit_id = add_completed_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         started_at=datetime(2026, 11, 18, 10, 0, 45, tzinfo=HELSINKI),
@@ -863,6 +913,7 @@ def test_add_completed_visit_saves_exact_times_in_utc(
 
 def test_add_completed_visit_rejects_archived_client(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -881,24 +932,25 @@ def test_add_completed_visit_rejects_archived_client(
 
     cursor.execute(
         """
-        INSERT INTO clients (first_name, last_name, archived_at)
-        VALUES (%s, %s, CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+        INSERT INTO clients (first_name, last_name, archived_at, created_by_user_id)
+        VALUES (%s, %s, CURRENT_TIMESTAMP AT TIME ZONE 'UTC', %s)
         RETURNING id
         """,
-        ("Arkistoitu", "Asiakas")
+        ("Arkistoitu", "Asiakas", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     with pytest.raises(ValueError, match="archived"):
         add_completed_visit(
+            user_ids["worker"],
             client_id,
             service_id,
             completed_date=date(2026, 11, 18)
@@ -911,6 +963,7 @@ def test_add_completed_visit_rejects_archived_client(
 
 def test_add_completed_visit_rolls_back_on_error(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -924,6 +977,8 @@ def test_add_completed_visit_rolls_back_on_error(
 
     def insert_then_fail(
         cursor,
+        user_id,
+        created_by_user_id,
         client_id,
         service_id,
         status,
@@ -938,10 +993,10 @@ def test_add_completed_visit_rolls_back_on_error(
     ):
         cursor.execute(
             """
-            INSERT INTO visits (client_id, service_id, status)
-            VALUES (%s, %s, %s)
+            INSERT INTO visits (client_id, service_id, status, user_id, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s)
             """,
-            (client_id, service_id, status)
+            (client_id, service_id, status, user_id, created_by_user_id)
         )
 
         raise RuntimeError("Simulated insert failure")
@@ -957,21 +1012,22 @@ def test_add_completed_visit_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     with pytest.raises(RuntimeError, match="Simulated insert failure"):
         add_completed_visit(
+            user_ids["worker"],
             client_id,
             service_id,
             completed_date=date(2026, 11, 18)
@@ -983,6 +1039,9 @@ def test_add_completed_visit_rolls_back_on_error(
 
 
 def test_add_completed_visit_closes_connection_on_error(monkeypatch):
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.visits.get_active_user", fake_active_user)
+
 
     class FakeCursor:
         def __init__(self):
@@ -1025,7 +1084,7 @@ def test_add_completed_visit_closes_connection_on_error(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Simulated select failure"):
-        add_completed_visit(1, 1, completed_date=date(2026, 11, 18))
+        add_completed_visit(1, 1, 1, completed_date=date(2026, 11, 18))
 
     assert connection.rolled_back is True
     assert connection.test_cursor.closed is True
@@ -1038,16 +1097,17 @@ def test_add_completed_visit_closes_connection_on_error(monkeypatch):
 def test_get_visit_rejects_invalid_id():
     for visit_id in ("1", None, 0, -1, 1.0):
         with pytest.raises(ValueError):
-            get_visit(visit_id)
+            get_visit(1, visit_id)
 
 
 def test_get_visit_rejects_boolean_id():
     with pytest.raises(ValueError):
-        get_visit(True)
+        get_visit(1, True)
 
 
 def test_get_visit_returns_planned_visit(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1065,20 +1125,21 @@ def test_get_visit_returns_planned_visit(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_at=datetime(2026, 11, 25, 10, 0, tzinfo=HELSINKI),
@@ -1087,9 +1148,10 @@ def test_get_visit_returns_planned_visit(
         description="Ruokaostokset"
     )
 
-    visit = get_visit(visit_id)
+    visit = get_visit(user_ids["worker"], visit_id)
 
-    # All columns are returned, including the ones added by v009
+    # All columns are returned, including the ones added by v009 and the
+    # user columns of v014
     assert set(visit) == {
         "id",
         "client_id",
@@ -1109,6 +1171,9 @@ def test_get_visit_returns_planned_visit(
         "price",
         "created_at",
         "updated_at",
+        "user_id",
+        "created_by_user_id",
+        "updated_by_user_id",
     }
 
     assert visit["id"] == visit_id
@@ -1136,6 +1201,7 @@ def test_get_visit_returns_planned_visit(
 
 def test_get_visit_returns_completed_visit(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1153,20 +1219,21 @@ def test_get_visit_returns_completed_visit(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     visit_id = add_completed_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         started_at=datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
@@ -1175,7 +1242,7 @@ def test_get_visit_returns_completed_visit(
         price=Decimal("48.00")
     )
 
-    visit = get_visit(visit_id)
+    visit = get_visit(user_ids["worker"], visit_id)
 
     assert visit["status"] == "completed"
     assert visit["completed_date"] == date(2026, 11, 18)
@@ -1194,6 +1261,7 @@ def test_get_visit_returns_completed_visit(
 
 def test_get_visit_returns_none_if_not_found(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1210,12 +1278,15 @@ def test_get_visit_returns_none_if_not_found(
         get_test_connection
     )
 
-    visit = get_visit(999999)
+    visit = get_visit(user_ids["worker"], 999999)
 
     assert visit is None
 
 
 def test_get_visit_closes_connection_on_error(monkeypatch):
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.visits.get_active_user", fake_active_user)
+
 
     class FakeCursor:
         def __init__(self):
@@ -1240,7 +1311,7 @@ def test_get_visit_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
-    def select_then_fail(cursor, visit_id):
+    def select_then_fail(cursor, visit_id, owner_user_id=None):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
@@ -1254,7 +1325,7 @@ def test_get_visit_closes_connection_on_error(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Simulated select failure"):
-        get_visit(1)
+        get_visit(1, 1)
 
     assert connection.test_cursor.closed is True
     assert connection.closed is True
@@ -1266,11 +1337,12 @@ def test_get_visit_closes_connection_on_error(monkeypatch):
 def test_get_client_visits_rejects_invalid_client_id():
     for client_id in ("1", None, True, 0, -1):
         with pytest.raises(ValueError):
-            get_client_visits(client_id)
+            get_client_visits(1, client_id)
 
 
 def test_get_client_visits_returns_empty_list(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1288,19 +1360,20 @@ def test_get_client_visits_returns_empty_list(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
-    visits = get_client_visits(client_id)
+    visits = get_client_visits(user_ids["worker"], client_id)
 
     assert visits == []
 
 
 def test_get_client_visits_returns_all_statuses_newest_first(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1318,15 +1391,15 @@ def test_get_client_visits_returns_all_statuses_newest_first(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
@@ -1345,9 +1418,9 @@ def test_get_client_visits_returns_all_statuses_newest_first(
             """
             INSERT INTO visits (
                 client_id, service_id, status, planned_week,
-                planned_date, completed_date, planned_duration_minutes
+                planned_date, completed_date, planned_duration_minutes, user_id, created_by_user_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 client_id,
@@ -1356,11 +1429,11 @@ def test_get_client_visits_returns_all_statuses_newest_first(
                 week,
                 planned_date,
                 completed_date,
-                duration
+                duration, user_ids["worker"], user_ids["worker"]
             )
         )
 
-    visits = get_client_visits(client_id)
+    visits = get_client_visits(user_ids["worker"], client_id)
 
     assert len(visits) == 4
 
@@ -1372,14 +1445,17 @@ def test_get_client_visits_returns_all_statuses_newest_first(
     assert visits[2]["completed_date"] == date(2026, 11, 18)
     assert visits[3]["status"] == "cancelled"
 
-    # Each visit has the same fields as get_visit() returns
-    assert len(visits[0]) == 18
+    # Each visit has the same fields as get_visit() returns, including
+    # the user columns of v014
+    assert len(visits[0]) == 21
+    assert visits[0]["user_id"] == user_ids["worker"]
     assert visits[1]["planned_duration_minutes"] == 120
     assert visits[1]["duration_minutes"] is None
 
 
 def test_get_client_visits_excludes_other_clients_visits(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1397,22 +1473,22 @@ def test_get_client_visits_excludes_other_clients_visits(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Toinen", "Asiakas")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Toinen", "Asiakas", user_ids["worker"])
     )
 
     other_client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
@@ -1420,13 +1496,13 @@ def test_get_client_visits_excludes_other_clients_visits(
     for visit_client_id in (client_id, other_client_id, other_client_id):
         cursor.execute(
             """
-            INSERT INTO visits (client_id, service_id, planned_week)
-            VALUES (%s, %s, %s)
+            INSERT INTO visits (client_id, service_id, planned_week, user_id, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s)
             """,
-            (visit_client_id, service_id, date(2026, 11, 23))
+            (visit_client_id, service_id, date(2026, 11, 23), user_ids["worker"], user_ids["worker"])
         )
 
-    visits = get_client_visits(client_id)
+    visits = get_client_visits(user_ids["worker"], client_id)
 
     assert len(visits) == 1
     assert visits[0]["client_id"] == client_id
@@ -1434,6 +1510,7 @@ def test_get_client_visits_excludes_other_clients_visits(
 
 def test_get_client_visits_returns_archived_client_visits(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1451,26 +1528,26 @@ def test_get_client_visits_returns_archived_client_visits(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
-        INSERT INTO visits (client_id, service_id, status, completed_date)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO visits (client_id, service_id, status, completed_date, user_id, created_by_user_id)
+        VALUES (%s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (client_id, service_id, "completed", date(2026, 11, 18))
+        (client_id, service_id, "completed", date(2026, 11, 18), user_ids["worker"], user_ids["worker"])
     )
 
     visit_id = cursor.fetchone()[0]
@@ -1481,13 +1558,16 @@ def test_get_client_visits_returns_archived_client_visits(
         (client_id,)
     )
 
-    visits = get_client_visits(client_id)
+    visits = get_client_visits(user_ids["worker"], client_id)
 
     assert len(visits) == 1
     assert visits[0]["id"] == visit_id
 
 
 def test_get_client_visits_closes_connection_on_error(monkeypatch):
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.visits.get_active_user", fake_active_user)
+
 
     class FakeCursor:
         def __init__(self):
@@ -1512,7 +1592,7 @@ def test_get_client_visits_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
-    def select_then_fail(cursor, client_id):
+    def select_then_fail(cursor, client_id, owner_user_id=None):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
@@ -1526,7 +1606,7 @@ def test_get_client_visits_closes_connection_on_error(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Simulated select failure"):
-        get_client_visits(1)
+        get_client_visits(1, 1)
 
     assert connection.test_cursor.closed is True
     assert connection.closed is True
@@ -1537,6 +1617,7 @@ def test_get_client_visits_closes_connection_on_error(monkeypatch):
 
 def test_get_planned_visits_returns_empty_list(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1553,13 +1634,14 @@ def test_get_planned_visits_returns_empty_list(
         get_test_connection
     )
 
-    visits = get_planned_visits()
+    visits = get_planned_visits(user_ids["worker"])
 
     assert visits == []
 
 
 def test_get_planned_visits_returns_only_planned_in_order(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1577,15 +1659,15 @@ def test_get_planned_visits_returns_only_planned_in_order(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
@@ -1609,9 +1691,9 @@ def test_get_planned_visits_returns_only_planned_in_order(
             """
             INSERT INTO visits (
                 client_id, service_id, status, planned_week,
-                planned_date, planned_at, priority, description
+                planned_date, planned_at, priority, description, user_id, created_by_user_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 client_id,
@@ -1621,11 +1703,11 @@ def test_get_planned_visits_returns_only_planned_in_order(
                 planned_date,
                 planned_at,
                 priority,
-                label
+                label, user_ids["worker"], user_ids["worker"]
             )
         )
 
-    visits = get_planned_visits()
+    visits = get_planned_visits(user_ids["worker"])
 
     labels = []
 
@@ -1638,6 +1720,9 @@ def test_get_planned_visits_returns_only_planned_in_order(
 
 
 def test_get_planned_visits_closes_connection_on_error(monkeypatch):
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.visits.get_active_user", fake_active_user)
+
 
     class FakeCursor:
         def __init__(self):
@@ -1662,7 +1747,7 @@ def test_get_planned_visits_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
-    def select_then_fail(cursor):
+    def select_then_fail(cursor, owner_user_id=None):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
@@ -1676,7 +1761,7 @@ def test_get_planned_visits_closes_connection_on_error(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Simulated select failure"):
-        get_planned_visits()
+        get_planned_visits(1)
 
     assert connection.test_cursor.closed is True
     assert connection.closed is True
@@ -1696,10 +1781,13 @@ def test_get_week_visits_rejects_invalid_week_start():
 
     for week_start in invalid_values:
         with pytest.raises(ValueError):
-            get_week_visits(week_start)
+            get_week_visits(1, week_start)
 
 
 def test_get_week_visits_uses_local_week_limits(monkeypatch):
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.visits.get_active_user", fake_active_user)
+
 
     class FakeConnection:
         def cursor(self):
@@ -1715,7 +1803,8 @@ def test_get_week_visits_uses_local_week_limits(monkeypatch):
         week_start,
         next_week_start,
         week_start_utc,
-        next_week_start_utc
+        next_week_start_utc,
+        owner_user_id=None
     ):
         calls.append(
             (week_start, next_week_start, week_start_utc, next_week_start_utc)
@@ -1732,10 +1821,10 @@ def test_get_week_visits_uses_local_week_limits(monkeypatch):
         select_and_remember
     )
 
-    get_week_visits(date(2026, 11, 23))
+    get_week_visits(1, date(2026, 11, 23))
 
     # Clocks move forward on Sunday 29.3.2026
-    get_week_visits(date(2026, 3, 23))
+    get_week_visits(1, date(2026, 3, 23))
 
     # Helsinki is UTC+2 in winter, so the week starts at 22.00 UTC
     assert calls[0] == (
@@ -1756,6 +1845,7 @@ def test_get_week_visits_uses_local_week_limits(monkeypatch):
 
 def test_get_week_visits_returns_visits_of_week(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1773,15 +1863,15 @@ def test_get_week_visits_returns_visits_of_week(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
@@ -1806,9 +1896,9 @@ def test_get_week_visits_returns_visits_of_week(
             INSERT INTO visits (
                 client_id, service_id, status, planned_week, planned_date,
                 completed_date, planned_duration_minutes, duration_minutes,
-                description
+                description, user_id, created_by_user_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 client_id,
@@ -1819,11 +1909,11 @@ def test_get_week_visits_returns_visits_of_week(
                 completed_date,
                 planned_minutes,
                 minutes,
-                label
+                label, user_ids["worker"], user_ids["worker"]
             )
         )
 
-    visits = get_week_visits(date(2026, 11, 23))
+    visits = get_week_visits(user_ids["worker"], date(2026, 11, 23))
 
     labels = []
 
@@ -1842,6 +1932,7 @@ def test_get_week_visits_returns_visits_of_week(
 
 def test_get_week_visits_uses_local_time_for_old_completed_visits(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1859,15 +1950,15 @@ def test_get_week_visits_uses_local_time_for_old_completed_visits(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
@@ -1889,14 +1980,14 @@ def test_get_week_visits_uses_local_time_for_old_completed_visits(
         cursor.execute(
             """
             INSERT INTO visits (
-                client_id, service_id, status, started_at, description
+                client_id, service_id, status, started_at, description, user_id, created_by_user_id
             )
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
-            (client_id, service_id, "completed", started_at, label)
+            (client_id, service_id, "completed", started_at, label, user_ids["worker"], user_ids["worker"])
         )
 
-    visits = get_week_visits(date(2026, 3, 23))
+    visits = get_week_visits(user_ids["worker"], date(2026, 3, 23))
 
     labels = []
 
@@ -1907,6 +1998,9 @@ def test_get_week_visits_uses_local_time_for_old_completed_visits(
 
 
 def test_get_week_visits_closes_connection_on_error(monkeypatch):
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.visits.get_active_user", fake_active_user)
+
 
     class FakeCursor:
         def __init__(self):
@@ -1936,7 +2030,8 @@ def test_get_week_visits_closes_connection_on_error(monkeypatch):
         week_start,
         next_week_start,
         week_start_utc,
-        next_week_start_utc
+        next_week_start_utc,
+        owner_user_id=None
     ):
         raise RuntimeError("Simulated select failure")
 
@@ -1951,7 +2046,7 @@ def test_get_week_visits_closes_connection_on_error(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Simulated select failure"):
-        get_week_visits(date(2026, 11, 23))
+        get_week_visits(1, date(2026, 11, 23))
 
     assert connection.test_cursor.closed is True
     assert connection.closed is True
@@ -1963,7 +2058,7 @@ def test_get_week_visits_closes_connection_on_error(monkeypatch):
 def test_update_visit_rejects_invalid_id():
     for visit_id in ("1", None, True, 0, -1):
         with pytest.raises(ValueError):
-            update_visit(visit_id, {"priority": 1})
+            update_visit(1, visit_id, {"priority": 1})
 
 
 def test_update_visit_rejects_invalid_changes(monkeypatch):
@@ -2000,11 +2095,12 @@ def test_update_visit_rejects_invalid_changes(monkeypatch):
 
     for changes in invalid_changes:
         with pytest.raises(ValueError):
-            update_visit(1, changes)
+            update_visit(1, 1, changes)
 
 
 def test_update_visit_changes_service_priority_and_duration(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -2022,27 +2118,28 @@ def test_update_visit_changes_service_priority_and_duration(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Apteekkiasiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Apteekkiasiointi", user_ids["worker"])
     )
 
     new_service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_date=date(2026, 11, 25),
@@ -2050,6 +2147,7 @@ def test_update_visit_changes_service_priority_and_duration(
     )
 
     updated = update_visit(
+        user_ids["worker"],
         visit_id,
         {
             "service_id": new_service_id,
@@ -2083,11 +2181,12 @@ def test_update_visit_changes_service_priority_and_duration(
     )
 
     # Saving the same value again is still a successful update
-    assert update_visit(visit_id, {"priority": 1}) is True
+    assert update_visit(user_ids["worker"], visit_id, {"priority": 1}) is True
 
 
 def test_update_visit_moves_visit_to_another_time(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -2105,21 +2204,22 @@ def test_update_visit_moves_visit_to_another_time(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     # Wednesday at 10.00, 120 minutes
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_at=datetime(2026, 11, 25, 10, 0, tzinfo=HELSINKI),
@@ -2135,6 +2235,7 @@ def test_update_visit_moves_visit_to_another_time(
 
     # Moved to Thursday at 12.00
     update_visit(
+        user_ids["worker"],
         visit_id,
         {"planned_at": datetime(2026, 11, 26, 12, 0, tzinfo=HELSINKI)}
     )
@@ -2150,6 +2251,7 @@ def test_update_visit_moves_visit_to_another_time(
 
     # Moved to the next week: the week follows the time
     update_visit(
+        user_ids["worker"],
         visit_id,
         {"planned_at": datetime(2026, 12, 1, 9, 0, tzinfo=HELSINKI)}
     )
@@ -2166,6 +2268,7 @@ def test_update_visit_moves_visit_to_another_time(
 
 def test_update_visit_clears_time_and_moves_day(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -2183,20 +2286,21 @@ def test_update_visit_clears_time_and_moves_day(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_at=datetime(2026, 11, 25, 10, 0, tzinfo=HELSINKI),
@@ -2211,7 +2315,7 @@ def test_update_visit_clears_time_and_moves_day(
     """
 
     # From an exact time to the day level: the day and week stay
-    update_visit(visit_id, {"planned_at": None})
+    update_visit(user_ids["worker"], visit_id, {"planned_at": None})
 
     cursor.execute(sql, (visit_id,))
 
@@ -2223,14 +2327,14 @@ def test_update_visit_clears_time_and_moves_day(
     )
 
     # To another day in the next week
-    update_visit(visit_id, {"planned_date": date(2026, 12, 2)})
+    update_visit(user_ids["worker"], visit_id, {"planned_date": date(2026, 12, 2)})
 
     cursor.execute(sql, (visit_id,))
 
     assert cursor.fetchone() == (date(2026, 11, 30), date(2026, 12, 2), None, 120)
 
     # From the day level to the week level: only the week stays
-    update_visit(visit_id, {"planned_date": None})
+    update_visit(user_ids["worker"], visit_id, {"planned_date": None})
 
     cursor.execute(sql, (visit_id,))
 
@@ -2239,6 +2343,7 @@ def test_update_visit_clears_time_and_moves_day(
 
 def test_update_visit_rejects_conflicting_schedule(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -2256,21 +2361,22 @@ def test_update_visit_rejects_conflicting_schedule(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     # Wednesday 25.11.2026 at 10.00
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_at=datetime(2026, 11, 25, 10, 0, tzinfo=HELSINKI)
@@ -2294,7 +2400,7 @@ def test_update_visit_rejects_conflicting_schedule(
 
     for changes in conflicting_changes:
         with pytest.raises(ValueError):
-            update_visit(visit_id, changes)
+            update_visit(user_ids["worker"], visit_id, changes)
 
     cursor.execute(
         "SELECT planned_week, planned_date, planned_at FROM visits WHERE id = %s",
@@ -2310,6 +2416,7 @@ def test_update_visit_rejects_conflicting_schedule(
 
 def test_update_visit_returns_false_if_not_found(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -2326,13 +2433,14 @@ def test_update_visit_returns_false_if_not_found(
         get_test_connection
     )
 
-    updated = update_visit(999999, {"priority": 1})
+    updated = update_visit(user_ids["worker"], 999999, {"priority": 1})
 
     assert updated is False
 
 
 def test_update_visit_rejects_completed_and_cancelled_visits(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -2350,15 +2458,15 @@ def test_update_visit_rejects_completed_and_cancelled_visits(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
@@ -2366,17 +2474,17 @@ def test_update_visit_rejects_completed_and_cancelled_visits(
     for status in ("completed", "cancelled"):
         cursor.execute(
             """
-            INSERT INTO visits (client_id, service_id, status, planned_week)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO visits (client_id, service_id, status, planned_week, user_id, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
-            (client_id, service_id, status, date(2026, 11, 23))
+            (client_id, service_id, status, date(2026, 11, 23), user_ids["worker"], user_ids["worker"])
         )
 
         visit_id = cursor.fetchone()[0]
 
         with pytest.raises(ValueError, match="Only planned visits"):
-            update_visit(visit_id, {"priority": 1})
+            update_visit(user_ids["worker"], visit_id, {"priority": 1})
 
         cursor.execute(
             "SELECT status, priority FROM visits WHERE id = %s",
@@ -2388,6 +2496,7 @@ def test_update_visit_rejects_completed_and_cancelled_visits(
 
 def test_update_visit_rolls_back_on_error(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -2399,7 +2508,7 @@ def test_update_visit_rolls_back_on_error(
     def get_test_connection():
         return connect_to_test_postgres(database=database)
 
-    def update_then_fail(cursor, visit_id, changes):
+    def update_then_fail(cursor, updated_by_user_id, visit_id, changes):
         cursor.execute(
             "UPDATE visits SET priority = %s WHERE id = %s",
             (1, visit_id)
@@ -2418,27 +2527,28 @@ def test_update_visit_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_week=date(2026, 11, 23)
     )
 
     with pytest.raises(RuntimeError, match="Simulated update failure"):
-        update_visit(visit_id, {"priority": 1})
+        update_visit(user_ids["worker"], visit_id, {"priority": 1})
 
     cursor.execute(
         "SELECT priority FROM visits WHERE id = %s",
@@ -2449,6 +2559,9 @@ def test_update_visit_rolls_back_on_error(
 
 
 def test_update_visit_closes_connection_on_error(monkeypatch):
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.visits.get_active_user", fake_active_user)
+
 
     class FakeCursor:
         def __init__(self):
@@ -2477,7 +2590,7 @@ def test_update_visit_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
-    def select_then_fail(cursor, visit_id, for_update=False):
+    def select_then_fail(cursor, visit_id, for_update=False, owner_user_id=None):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
@@ -2491,7 +2604,7 @@ def test_update_visit_closes_connection_on_error(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Simulated select failure"):
-        update_visit(1, {"priority": 1})
+        update_visit(1, 1, {"priority": 1})
 
     assert connection.rolled_back is True
     assert connection.test_cursor.closed is True
@@ -2504,7 +2617,7 @@ def test_update_visit_closes_connection_on_error(monkeypatch):
 def test_complete_visit_rejects_invalid_id():
     for visit_id in ("1", None, True, 0, -1):
         with pytest.raises(ValueError):
-            complete_visit(visit_id)
+            complete_visit(1, visit_id)
 
 
 def test_complete_visit_rejects_invalid_times_and_duration():
@@ -2536,11 +2649,12 @@ def test_complete_visit_rejects_invalid_times_and_duration():
 
     for values in invalid_values:
         with pytest.raises(ValueError):
-            complete_visit(1, **values)
+            complete_visit(1, 1, **values)
 
 
 def test_complete_visit_with_one_click_uses_plan(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -2558,21 +2672,22 @@ def test_complete_visit_with_one_click_uses_plan(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     # 18.11.2026 at 10.00, 120 minutes
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_at=datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
@@ -2581,7 +2696,7 @@ def test_complete_visit_with_one_click_uses_plan(
         description="Ruokaostokset"
     )
 
-    completed = complete_visit(visit_id)
+    completed = complete_visit(user_ids["worker"], visit_id)
 
     assert completed is True
 
@@ -2629,6 +2744,7 @@ def test_complete_visit_with_one_click_uses_plan(
 
 def test_complete_visit_with_changed_duration(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -2646,27 +2762,28 @@ def test_complete_visit_with_changed_duration(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_at=datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
         planned_duration_minutes=120
     )
 
-    complete_visit(visit_id, duration_minutes=90)
+    complete_visit(user_ids["worker"], visit_id, duration_minutes=90)
 
     cursor.execute(
         """
@@ -2689,6 +2806,7 @@ def test_complete_visit_with_changed_duration(
 
 def test_complete_visit_with_own_day_or_times(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -2706,20 +2824,21 @@ def test_complete_visit_with_own_day_or_times(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     other_day_visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_at=datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
@@ -2727,6 +2846,7 @@ def test_complete_visit_with_own_day_or_times(
     )
 
     own_times_visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_at=datetime(2026, 11, 18, 10, 0, tzinfo=HELSINKI),
@@ -2734,10 +2854,11 @@ def test_complete_visit_with_own_day_or_times(
     )
 
     # Done on another day: the old day's time is not copied
-    complete_visit(other_day_visit_id, completed_date=date(2026, 11, 19))
+    complete_visit(user_ids["worker"], other_day_visit_id, completed_date=date(2026, 11, 19))
 
     # Done at other times: the user's times are used
     complete_visit(
+        user_ids["worker"],
         own_times_visit_id,
         started_at=datetime(2026, 11, 18, 13, 0, tzinfo=HELSINKI),
         ended_at=datetime(2026, 11, 18, 14, 15, tzinfo=HELSINKI)
@@ -2763,8 +2884,9 @@ def test_complete_visit_with_own_day_or_times(
     )
 
 
-def test_complete_visit_without_exact_times(
+def test_complete_visit_before_planned_end_time(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -2782,21 +2904,91 @@ def test_complete_visit_without_exact_times(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
+    )
+
+    service_id = cursor.fetchone()[0]
+
+    # Started 30 minutes ago and planned for 120 minutes, so the planned
+    # end time has not come yet
+    planned_at = datetime.now(HELSINKI) - timedelta(minutes=30)
+
+    visit_id = add_planned_visit(
+        user_ids["worker"],
+        client_id,
+        service_id,
+        planned_at=planned_at,
+        planned_duration_minutes=120
+    )
+
+    completed = complete_visit(user_ids["worker"], visit_id)
+
+    assert completed is True
+
+    cursor.execute(
+        """
+        SELECT status, completed_date, duration_minutes, started_at, ended_at
+        FROM visits
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    # The planned times are not saved as actual times, because the end
+    # would be in the future. The day and the duration are kept.
+    assert cursor.fetchone() == (
+        "completed",
+        planned_at.date(),
+        120,
+        None,
+        None,
+    )
+
+
+def test_complete_visit_without_exact_times(
+    postgres_cursor_with_visit_scheduling,
+    user_ids,
+    connect_to_test_postgres,
+    monkeypatch
+):
+    cursor = postgres_cursor_with_visit_scheduling
+
+    cursor.execute("SELECT current_database()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_postgres(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_postgres_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
+    )
+
+    client_id = cursor.fetchone()[0]
+
+    cursor.execute(
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     # Planned for a day without a time or a duration
     day_visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_date=date(2026, 11, 18)
@@ -2804,18 +2996,19 @@ def test_complete_visit_without_exact_times(
 
     # Planned only for a week, with a duration
     week_visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_week=date(2026, 11, 16),
         planned_duration_minutes=60
     )
 
-    complete_visit(day_visit_id)
+    complete_visit(user_ids["worker"], day_visit_id)
 
     # A week-only visit gets today's date. The date is read before and
     # after the call, so the test also works around midnight.
     today_before = datetime.now(HELSINKI).date()
-    complete_visit(week_visit_id)
+    complete_visit(user_ids["worker"], week_visit_id)
     today_after = datetime.now(HELSINKI).date()
 
     sql = """
@@ -2841,6 +3034,7 @@ def test_complete_visit_without_exact_times(
 
 def test_complete_visit_returns_false_if_not_found(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -2857,13 +3051,14 @@ def test_complete_visit_returns_false_if_not_found(
         get_test_connection
     )
 
-    completed = complete_visit(999999)
+    completed = complete_visit(user_ids["worker"], 999999)
 
     assert completed is False
 
 
 def test_complete_visit_rejects_completed_and_cancelled_visits(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -2881,45 +3076,46 @@ def test_complete_visit_rejects_completed_and_cancelled_visits(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_date=date(2026, 11, 18),
         planned_duration_minutes=60
     )
 
-    complete_visit(visit_id)
+    complete_visit(user_ids["worker"], visit_id)
 
     # A second completion is not allowed
     with pytest.raises(ValueError, match="Only planned visits"):
-        complete_visit(visit_id, duration_minutes=90)
+        complete_visit(user_ids["worker"], visit_id, duration_minutes=90)
 
     cursor.execute(
         """
-        INSERT INTO visits (client_id, service_id, status, planned_week)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO visits (client_id, service_id, status, planned_week, user_id, created_by_user_id)
+        VALUES (%s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (client_id, service_id, "cancelled", date(2026, 11, 16))
+        (client_id, service_id, "cancelled", date(2026, 11, 16), user_ids["worker"], user_ids["worker"])
     )
 
     cancelled_visit_id = cursor.fetchone()[0]
 
     with pytest.raises(ValueError, match="Only planned visits"):
-        complete_visit(cancelled_visit_id)
+        complete_visit(user_ids["worker"], cancelled_visit_id)
 
     cursor.execute(
         "SELECT duration_minutes FROM visits WHERE id = %s",
@@ -2938,6 +3134,7 @@ def test_complete_visit_rejects_completed_and_cancelled_visits(
 
 def test_complete_visit_rolls_back_on_error(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -2951,6 +3148,7 @@ def test_complete_visit_rolls_back_on_error(
 
     def complete_then_fail(
         cursor,
+        updated_by_user_id,
         visit_id,
         completed_date,
         duration_minutes,
@@ -2975,27 +3173,28 @@ def test_complete_visit_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_date=date(2026, 11, 18)
     )
 
     with pytest.raises(RuntimeError, match="Simulated update failure"):
-        complete_visit(visit_id)
+        complete_visit(user_ids["worker"], visit_id)
 
     cursor.execute(
         "SELECT status, completed_date FROM visits WHERE id = %s",
@@ -3006,6 +3205,9 @@ def test_complete_visit_rolls_back_on_error(
 
 
 def test_complete_visit_closes_connection_on_error(monkeypatch):
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.visits.get_active_user", fake_active_user)
+
 
     class FakeCursor:
         def __init__(self):
@@ -3034,7 +3236,7 @@ def test_complete_visit_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
-    def select_then_fail(cursor, visit_id, for_update=False):
+    def select_then_fail(cursor, visit_id, for_update=False, owner_user_id=None):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
@@ -3048,7 +3250,7 @@ def test_complete_visit_closes_connection_on_error(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Simulated select failure"):
-        complete_visit(1)
+        complete_visit(1, 1)
 
     assert connection.rolled_back is True
     assert connection.test_cursor.closed is True
@@ -3061,11 +3263,12 @@ def test_complete_visit_closes_connection_on_error(monkeypatch):
 def test_cancel_visit_rejects_invalid_id():
     for visit_id in ("1", None, True, 0, -1):
         with pytest.raises(ValueError):
-            cancel_visit(visit_id)
+            cancel_visit(1, visit_id)
 
 
 def test_cancel_visit_changes_only_status(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -3083,20 +3286,21 @@ def test_cancel_visit_changes_only_status(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_at=datetime(2026, 11, 25, 10, 0, tzinfo=HELSINKI),
@@ -3117,7 +3321,7 @@ def test_cancel_visit_changes_only_status(
     cursor.execute(sql, (visit_id,))
     values_before = cursor.fetchone()
 
-    cancelled = cancel_visit(visit_id)
+    cancelled = cancel_visit(user_ids["worker"], visit_id)
 
     assert cancelled is True
 
@@ -3133,6 +3337,7 @@ def test_cancel_visit_changes_only_status(
 
 def test_cancelled_visit_stays_in_history_only(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -3150,50 +3355,52 @@ def test_cancelled_visit_stays_in_history_only(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_date=date(2026, 11, 18),
         planned_duration_minutes=60
     )
 
-    cancel_visit(visit_id)
+    cancel_visit(user_ids["worker"], visit_id)
 
     # Shown in the visit itself and in the client's history
-    assert get_visit(visit_id)["status"] == "cancelled"
+    assert get_visit(user_ids["worker"], visit_id)["status"] == "cancelled"
 
-    history = get_client_visits(client_id)
+    history = get_client_visits(user_ids["worker"], client_id)
 
     assert len(history) == 1
     assert history[0]["id"] == visit_id
 
     # Left out of the planning views
-    assert get_planned_visits() == []
-    assert get_week_visits(date(2026, 11, 16)) == []
+    assert get_planned_visits(user_ids["worker"]) == []
+    assert get_week_visits(user_ids["worker"], date(2026, 11, 16)) == []
 
     # Cannot be changed or completed any more
     with pytest.raises(ValueError, match="Only planned visits"):
-        update_visit(visit_id, {"priority": 1})
+        update_visit(user_ids["worker"], visit_id, {"priority": 1})
 
     with pytest.raises(ValueError, match="Only planned visits"):
-        complete_visit(visit_id)
+        complete_visit(user_ids["worker"], visit_id)
 
 
 def test_cancel_visit_returns_false_if_not_found(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -3210,13 +3417,14 @@ def test_cancel_visit_returns_false_if_not_found(
         get_test_connection
     )
 
-    cancelled = cancel_visit(999999)
+    cancelled = cancel_visit(user_ids["worker"], 999999)
 
     assert cancelled is False
 
 
 def test_cancel_visit_rejects_completed_and_cancelled_visits(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -3234,20 +3442,21 @@ def test_cancel_visit_rejects_completed_and_cancelled_visits(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     completed_visit_id = add_completed_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         completed_date=date(2026, 11, 18),
@@ -3255,20 +3464,21 @@ def test_cancel_visit_rejects_completed_and_cancelled_visits(
     )
 
     planned_visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_week=date(2026, 11, 23)
     )
 
-    cancel_visit(planned_visit_id)
+    cancel_visit(user_ids["worker"], planned_visit_id)
 
     # A completed visit is part of the work history
     with pytest.raises(ValueError, match="Only planned visits"):
-        cancel_visit(completed_visit_id)
+        cancel_visit(user_ids["worker"], completed_visit_id)
 
     # A visit cannot be cancelled twice
     with pytest.raises(ValueError, match="Only planned visits"):
-        cancel_visit(planned_visit_id)
+        cancel_visit(user_ids["worker"], planned_visit_id)
 
     cursor.execute(
         "SELECT status FROM visits WHERE id = %s",
@@ -3280,6 +3490,7 @@ def test_cancel_visit_rejects_completed_and_cancelled_visits(
 
 def test_cancel_visit_rolls_back_on_error(
     postgres_cursor_with_visit_scheduling,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -3291,7 +3502,7 @@ def test_cancel_visit_rolls_back_on_error(
     def get_test_connection():
         return connect_to_test_postgres(database=database)
 
-    def cancel_then_fail(cursor, visit_id):
+    def cancel_then_fail(cursor, updated_by_user_id, visit_id, owner_user_id=None):
         cursor.execute(
             "UPDATE visits SET status = 'cancelled' WHERE id = %s",
             (visit_id,)
@@ -3310,27 +3521,28 @@ def test_cancel_visit_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_week=date(2026, 11, 23)
     )
 
     with pytest.raises(RuntimeError, match="Simulated update failure"):
-        cancel_visit(visit_id)
+        cancel_visit(user_ids["worker"], visit_id)
 
     cursor.execute("SELECT status FROM visits WHERE id = %s", (visit_id,))
 
@@ -3338,6 +3550,9 @@ def test_cancel_visit_rolls_back_on_error(
 
 
 def test_cancel_visit_closes_connection_on_error(monkeypatch):
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.visits.get_active_user", fake_active_user)
+
 
     class FakeCursor:
         def __init__(self):
@@ -3366,7 +3581,7 @@ def test_cancel_visit_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
-    def cancel_then_fail(cursor, visit_id):
+    def cancel_then_fail(cursor, updated_by_user_id, visit_id, owner_user_id=None):
         raise RuntimeError("Simulated update failure")
 
     monkeypatch.setattr(
@@ -3380,7 +3595,7 @@ def test_cancel_visit_closes_connection_on_error(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Simulated update failure"):
-        cancel_visit(1)
+        cancel_visit(1, 1)
 
     assert connection.rolled_back is True
     assert connection.test_cursor.closed is True
@@ -3393,17 +3608,18 @@ def test_cancel_visit_closes_connection_on_error(monkeypatch):
 def test_visit_functions_reject_invalid_note():
     for note in (123, ["Kaupassa"], "ä" * 32768):
         with pytest.raises(ValueError):
-            add_planned_visit(1, 1, planned_week=date(2026, 11, 23), note=note)
+            add_planned_visit(1, 1, 1, planned_week=date(2026, 11, 23), note=note)
 
         with pytest.raises(ValueError):
-            add_completed_visit(1, 1, completed_date=date(2026, 11, 18), note=note)
+            add_completed_visit(1, 1, 1, completed_date=date(2026, 11, 18), note=note)
 
         with pytest.raises(ValueError):
-            complete_visit(1, note=note)
+            complete_visit(1, 1, note=note)
 
 
 def test_visit_functions_save_note_with_visit(
     postgres_cursor_with_visit_notes,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -3421,20 +3637,21 @@ def test_visit_functions_save_note_with_visit(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     planned_visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_week=date(2026, 11, 23),
@@ -3442,6 +3659,7 @@ def test_visit_functions_save_note_with_visit(
     )
 
     completed_visit_id = add_completed_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         completed_date=date(2026, 11, 18),
@@ -3449,21 +3667,27 @@ def test_visit_functions_save_note_with_visit(
     )
 
     visit_to_complete_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_date=date(2026, 11, 18),
         planned_duration_minutes=60
     )
 
-    assert complete_visit(visit_to_complete_id, note="Kaikki hyvin") is True
+    # The admin completes the worker's visit and writes the note
+    assert complete_visit(user_ids["admin"], visit_to_complete_id, note="Kaikki hyvin") is True
 
-    cursor.execute("SELECT visit_id, content FROM visit_notes ORDER BY id")
+    cursor.execute(
+        "SELECT visit_id, content, created_by_user_id, updated_by_user_id "
+        "FROM visit_notes ORDER BY id"
+    )
 
-    # Each note belongs to its own visit, stripped and with line breaks kept
+    # Each note belongs to its own visit, stripped and with line breaks
+    # kept. The creator of a note is the user who saved it.
     assert cursor.fetchall() == [
-        (planned_visit_id, "Muista ostoslista"),
-        (completed_visit_id, "Käytiin kaupassa.\nHaettiin lääkkeet."),
-        (visit_to_complete_id, "Kaikki hyvin"),
+        (planned_visit_id, "Muista ostoslista", user_ids["worker"], None),
+        (completed_visit_id, "Käytiin kaupassa.\nHaettiin lääkkeet.", user_ids["worker"], None),
+        (visit_to_complete_id, "Kaikki hyvin", user_ids["admin"], None),
     ]
 
     cursor.execute(
@@ -3477,6 +3701,7 @@ def test_visit_functions_save_note_with_visit(
 
 def test_visit_functions_skip_empty_notes(
     postgres_cursor_with_visit_notes,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -3494,27 +3719,27 @@ def test_visit_functions_skip_empty_notes(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     # Without a note, and with empty or blank notes
-    add_planned_visit(client_id, service_id, planned_week=date(2026, 11, 23))
-    add_planned_visit(client_id, service_id, planned_week=date(2026, 11, 23), note="")
-    add_completed_visit(client_id, service_id, completed_date=date(2026, 11, 18), note="   ")
+    add_planned_visit(user_ids["worker"], client_id, service_id, planned_week=date(2026, 11, 23))
+    add_planned_visit(user_ids["worker"], client_id, service_id, planned_week=date(2026, 11, 23), note="")
+    add_completed_visit(user_ids["worker"], client_id, service_id, completed_date=date(2026, 11, 18), note="   ")
 
-    visit_id = add_planned_visit(client_id, service_id, planned_date=date(2026, 11, 18))
+    visit_id = add_planned_visit(user_ids["worker"], client_id, service_id, planned_date=date(2026, 11, 18))
 
-    assert complete_visit(visit_id, note="\n\t") is True
+    assert complete_visit(user_ids["worker"], visit_id, note="\n\t") is True
 
     cursor.execute("SELECT COUNT(*) FROM visits")
 
@@ -3527,6 +3752,7 @@ def test_visit_functions_skip_empty_notes(
 
 def test_complete_visit_does_not_add_note_without_completion(
     postgres_cursor_with_visit_notes,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -3544,31 +3770,32 @@ def test_complete_visit_does_not_add_note_without_completion(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     completed_visit_id = add_completed_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         completed_date=date(2026, 11, 18)
     )
 
     # A missing visit
-    assert complete_visit(999999, note="Ei tallenneta") is False
+    assert complete_visit(user_ids["worker"], 999999, note="Ei tallenneta") is False
 
     # A visit that is already completed
     with pytest.raises(ValueError, match="Only planned visits"):
-        complete_visit(completed_visit_id, note="Ei tallenneta")
+        complete_visit(user_ids["worker"], completed_visit_id, note="Ei tallenneta")
 
     cursor.execute("SELECT COUNT(*) FROM visit_notes")
 
@@ -3577,6 +3804,7 @@ def test_complete_visit_does_not_add_note_without_completion(
 
 def test_add_visit_rolls_back_when_note_insert_fails(
     postgres_cursor_with_visit_notes,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -3590,10 +3818,10 @@ def test_add_visit_rolls_back_when_note_insert_fails(
 
     # A real database error: the note points to a visit that does not
     # exist, so the foreign key rejects it after the visit was inserted.
-    def insert_note_with_wrong_visit(cursor, visit_id, content):
+    def insert_note_with_wrong_visit(cursor, created_by_user_id, visit_id, content):
         cursor.execute(
-            "INSERT INTO visit_notes (visit_id, content) VALUES (%s, %s)",
-            (visit_id + 1000000, content)
+            "INSERT INTO visit_notes (visit_id, content, created_by_user_id) VALUES (%s, %s, %s)",
+            (visit_id + 1000000, content, created_by_user_id)
         )
 
     monkeypatch.setattr(
@@ -3607,21 +3835,22 @@ def test_add_visit_rolls_back_when_note_insert_fails(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     with pytest.raises(psycopg.IntegrityError):
         add_planned_visit(
+            user_ids["worker"],
             client_id,
             service_id,
             planned_week=date(2026, 11, 23),
@@ -3630,6 +3859,7 @@ def test_add_visit_rolls_back_when_note_insert_fails(
 
     with pytest.raises(psycopg.IntegrityError):
         add_completed_visit(
+            user_ids["worker"],
             client_id,
             service_id,
             completed_date=date(2026, 11, 18),
@@ -3648,6 +3878,7 @@ def test_add_visit_rolls_back_when_note_insert_fails(
 
 def test_complete_visit_rolls_back_when_note_insert_fails(
     postgres_cursor_with_visit_notes,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -3659,10 +3890,10 @@ def test_complete_visit_rolls_back_when_note_insert_fails(
     def get_test_connection():
         return connect_to_test_postgres(database=database)
 
-    def insert_note_with_wrong_visit(cursor, visit_id, content):
+    def insert_note_with_wrong_visit(cursor, created_by_user_id, visit_id, content):
         cursor.execute(
-            "INSERT INTO visit_notes (visit_id, content) VALUES (%s, %s)",
-            (visit_id + 1000000, content)
+            "INSERT INTO visit_notes (visit_id, content, created_by_user_id) VALUES (%s, %s, %s)",
+            (visit_id + 1000000, content, created_by_user_id)
         )
 
     monkeypatch.setattr(
@@ -3671,20 +3902,21 @@ def test_complete_visit_rolls_back_when_note_insert_fails(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_date=date(2026, 11, 18),
@@ -3697,7 +3929,7 @@ def test_complete_visit_rolls_back_when_note_insert_fails(
     )
 
     with pytest.raises(psycopg.IntegrityError):
-        complete_visit(visit_id, note="Muistiinpano")
+        complete_visit(user_ids["worker"], visit_id, note="Muistiinpano")
 
     # The status change was rolled back together with the note
     cursor.execute(
@@ -3717,6 +3949,9 @@ def test_complete_visit_rolls_back_when_note_insert_fails(
 
 
 def test_complete_visit_with_note_closes_connection_on_error(monkeypatch):
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.visits.get_active_user", fake_active_user)
+
 
     class FakeCursor:
         def __init__(self):
@@ -3749,7 +3984,7 @@ def test_complete_visit_with_note_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
-    def select_planned_visit(cursor, visit_id, for_update=False):
+    def select_planned_visit(cursor, visit_id, for_update=False, owner_user_id=None):
         return {
             "status": "planned",
             "planned_date": date(2026, 11, 18),
@@ -3759,6 +3994,7 @@ def test_complete_visit_with_note_closes_connection_on_error(monkeypatch):
 
     def complete_record(
         cursor,
+        updated_by_user_id,
         visit_id,
         completed_date,
         duration_minutes,
@@ -3767,7 +4003,7 @@ def test_complete_visit_with_note_closes_connection_on_error(monkeypatch):
     ):
         return True
 
-    def insert_note_then_fail(cursor, visit_id, content):
+    def insert_note_then_fail(cursor, created_by_user_id, visit_id, content):
         raise RuntimeError("Simulated note failure")
 
     monkeypatch.setattr(
@@ -3791,7 +4027,7 @@ def test_complete_visit_with_note_closes_connection_on_error(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Simulated note failure"):
-        complete_visit(1, note="Muistiinpano")
+        complete_visit(1, 1, note="Muistiinpano")
 
     assert connection.committed is False
     assert connection.rolled_back is True
@@ -3808,6 +4044,7 @@ def test_complete_visit_with_note_closes_connection_on_error(monkeypatch):
 @pytest.fixture
 def lock_database(
     postgres_cursor_with_visit_notes,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -3825,11 +4062,16 @@ def lock_database(
     monkeypatch.setattr("carelog.services.visits.get_postgres_connection", get_test_connection)
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES ('Hilma', 'Testi') RETURNING id"
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) "
+        "VALUES ('Hilma', 'Testi', %s) RETURNING id",
+        (user_ids["admin"],)
     )
     client_id = cursor.fetchone()[0]
 
-    cursor.execute("INSERT INTO services (name) VALUES ('Kauppa-asiointi') RETURNING id")
+    cursor.execute(
+        "INSERT INTO services (name, created_by_user_id) VALUES ('Kauppa-asiointi', %s) RETURNING id",
+        (user_ids["admin"],)
+    )
     service_id = cursor.fetchone()[0]
 
     # A planned visit on Wednesday 25.11.2026 at 10.00 Helsinki time
@@ -3838,12 +4080,12 @@ def lock_database(
         """
         INSERT INTO visits (
             client_id, service_id, planned_week, planned_date, planned_at,
-            planned_duration_minutes
+            planned_duration_minutes, user_id, created_by_user_id
         )
-        VALUES (%s, %s, '2026-11-23', '2026-11-25', '2026-11-25 08:00', 60)
+        VALUES (%s, %s, '2026-11-23', '2026-11-25', '2026-11-25 08:00', 60, %s, %s)
         RETURNING id
         """,
-        (client_id, service_id)
+        (client_id, service_id, user_ids["worker"], user_ids["worker"])
     )
     visit_id = cursor.fetchone()[0]
 
@@ -3855,7 +4097,7 @@ def lock_database(
         other_connection.close()
 
 
-def test_update_visit_uses_current_locked_schedule(lock_database):
+def test_update_visit_uses_current_locked_schedule(lock_database, user_ids):
     cursor, visit_id, other_connection = lock_database
 
     # The other connection moves the visit to the next week but does not
@@ -3871,7 +4113,7 @@ def test_update_visit_uses_current_locked_schedule(lock_database):
 
     # Clearing the time keeps the stored day and week. They must be the
     # new ones, not the ones before the other change.
-    thread, done, outcome = start_in_thread(update_visit, visit_id, {"planned_at": None})
+    thread, done, outcome = start_in_thread(update_visit, user_ids["worker"], visit_id, {"planned_at": None})
 
     wait_until_waiting_for_lock(cursor)
     assert not done.is_set()
@@ -3890,7 +4132,7 @@ def test_update_visit_uses_current_locked_schedule(lock_database):
     assert cursor.fetchone() == (date(2026, 11, 30), date(2026, 12, 2), None)
 
 
-def test_complete_visit_uses_current_planned_duration(lock_database):
+def test_complete_visit_uses_current_planned_duration(lock_database, user_ids):
     cursor, visit_id, other_connection = lock_database
 
     # A visit planned in the past, without an exact time, for 60 minutes
@@ -3909,7 +4151,7 @@ def test_complete_visit_uses_current_planned_duration(lock_database):
         (visit_id,)
     )
 
-    thread, done, outcome = start_in_thread(complete_visit, visit_id)
+    thread, done, outcome = start_in_thread(complete_visit, user_ids["worker"], visit_id)
 
     wait_until_waiting_for_lock(cursor)
     assert not done.is_set()
@@ -3941,6 +4183,7 @@ def test_complete_visit_uses_current_planned_duration(lock_database):
 )
 def test_concurrent_status_change_is_respected(
     lock_database,
+    user_ids,
     new_status,
     function,
     arguments,
@@ -3954,7 +4197,7 @@ def test_concurrent_status_change_is_respected(
         (new_status, visit_id)
     )
 
-    thread, done, outcome = start_in_thread(function, visit_id, *arguments)
+    thread, done, outcome = start_in_thread(function, user_ids["worker"], visit_id, *arguments)
 
     wait_until_waiting_for_lock(cursor)
     assert not done.is_set()
@@ -3975,7 +4218,7 @@ def test_concurrent_status_change_is_respected(
     assert cursor.fetchone() == (new_status, 2, None)
 
 
-def test_error_after_lock_rolls_back_and_releases_the_row(lock_database, monkeypatch):
+def test_error_after_lock_rolls_back_and_releases_the_row(lock_database, user_ids, monkeypatch):
     cursor, visit_id, other_connection = lock_database
 
     cursor.execute(
@@ -3984,7 +4227,9 @@ def test_error_after_lock_rolls_back_and_releases_the_row(lock_database, monkeyp
         (visit_id,)
     )
 
-    def lock_then_fail(cursor, visit_id, completed_date, duration_minutes, started_at, ended_at):
+    def lock_then_fail(
+        cursor, updated_by_user_id, visit_id, completed_date, duration_minutes, started_at, ended_at
+    ):
         # The service has already locked the row. The status is changed
         # and then the operation fails.
         cursor.execute("UPDATE visits SET status = 'completed' WHERE id = %s", (visit_id,))
@@ -3993,7 +4238,7 @@ def test_error_after_lock_rolls_back_and_releases_the_row(lock_database, monkeyp
     monkeypatch.setattr("carelog.services.visits.complete_visit_record", lock_then_fail)
 
     with pytest.raises(RuntimeError, match="Simulated failure"):
-        complete_visit(visit_id, note="Ei saa tallentua")
+        complete_visit(user_ids["worker"], visit_id, note="Ei saa tallentua")
 
     cursor.execute(
         "SELECT status, completed_date, duration_minutes FROM visits WHERE id = %s",
@@ -4012,14 +4257,14 @@ def test_error_after_lock_rolls_back_and_releases_the_row(lock_database, monkeyp
     other_connection.rollback()
 
 
-def test_update_and_complete_still_work_normally(lock_database):
+def test_update_and_complete_still_work_normally(lock_database, user_ids):
     cursor, visit_id, other_connection = lock_database
 
-    assert update_visit(visit_id, {"planned_duration_minutes": 45, "priority": 1}) is True
-    assert update_visit(visit_id, {"planned_date": date(2026, 11, 20), "planned_at": None}) is True
-    assert complete_visit(visit_id, note="Kaikki hyvin") is True
+    assert update_visit(user_ids["worker"], visit_id, {"planned_duration_minutes": 45, "priority": 1}) is True
+    assert update_visit(user_ids["worker"], visit_id, {"planned_date": date(2026, 11, 20), "planned_at": None}) is True
+    assert complete_visit(user_ids["worker"], visit_id, note="Kaikki hyvin") is True
 
-    visit = get_visit(visit_id)
+    visit = get_visit(user_ids["worker"], visit_id)
 
     assert visit["status"] == "completed"
     assert visit["completed_date"] == date(2026, 11, 20)
@@ -4030,8 +4275,8 @@ def test_update_and_complete_still_work_normally(lock_database):
     assert cursor.fetchall() == [("Kaikki hyvin",)]
 
     # A missing visit still returns False
-    assert update_visit(visit_id + 1000, {"priority": 1}) is False
-    assert complete_visit(visit_id + 1000) is False
+    assert update_visit(user_ids["worker"], visit_id + 1000, {"priority": 1}) is False
+    assert complete_visit(user_ids["worker"], visit_id + 1000) is False
 
 
 # CLIENT LOCKING TESTS
@@ -4068,6 +4313,7 @@ NEW_VISITS = [
 @pytest.mark.parametrize(("add_visit", "arguments"), NEW_VISITS, ids=["planned", "completed"])
 def test_add_visit_waits_for_archiving_and_rejects_archived_client(
     client_lock_database,
+    user_ids,
     add_visit,
     arguments
 ):
@@ -4076,9 +4322,9 @@ def test_add_visit_waits_for_archiving_and_rejects_archived_client(
     # The other connection archives the client but does not commit yet,
     # so it keeps the client row locked.
     with other_connection.cursor() as other_cursor:
-        assert archive_client_record(other_cursor, client_id) is True
+        assert archive_client_record(other_cursor, user_ids["admin"], client_id) is True
 
-    thread, done, outcome = start_in_thread(add_visit, client_id, service_id, **arguments)
+    thread, done, outcome = start_in_thread(add_visit, user_ids["worker"], client_id, service_id, **arguments)
 
     wait_until_waiting_for_lock(cursor)
     assert not done.is_set()
@@ -4099,6 +4345,7 @@ def test_add_visit_waits_for_archiving_and_rejects_archived_client(
 @pytest.mark.parametrize(("add_visit", "arguments"), NEW_VISITS, ids=["planned", "completed"])
 def test_archiving_waits_for_visit_that_locked_the_client_first(
     client_lock_database,
+    user_ids,
     monkeypatch,
     add_visit,
     arguments
@@ -4122,14 +4369,16 @@ def test_archiving_waits_for_visit_that_locked_the_client_first(
     monkeypatch.setattr("carelog.services.visits.insert_visit", insert_then_wait)
 
     add_thread, add_done, add_outcome = start_in_thread(
-        add_visit, client_id, service_id, **arguments
+        add_visit, user_ids["worker"], client_id, service_id, **arguments
     )
     archive_thread = None
 
     try:
         assert client_locked.wait(timeout=10)
 
-        archive_thread, archive_done, archive_outcome = start_in_thread(archive_client, client_id)
+        archive_thread, archive_done, archive_outcome = start_in_thread(
+            archive_client, user_ids["admin"], client_id
+        )
 
         # Archiving must wait for the lock of the visit transaction
         wait_until_waiting_for_lock(cursor)
@@ -4168,12 +4417,12 @@ def test_archiving_waits_for_visit_that_locked_the_client_first(
     assert created_at <= archived_at
 
 
-def test_get_client_does_not_wait_for_client_lock(client_lock_database):
+def test_get_client_does_not_wait_for_client_lock(client_lock_database, user_ids):
     cursor, client_id, service_id, other_connection = client_lock_database
 
     # The other connection keeps the client row locked
     with other_connection.cursor() as other_cursor:
-        archive_client_record(other_cursor, client_id)
+        archive_client_record(other_cursor, user_ids["admin"], client_id)
 
     thread, done, outcome = start_in_thread(get_client, client_id)
 
@@ -4188,6 +4437,7 @@ def test_get_client_does_not_wait_for_client_lock(client_lock_database):
 
 def test_error_after_client_lock_rolls_back_and_releases_the_client(
     client_lock_database,
+    user_ids,
     monkeypatch
 ):
     cursor, client_id, service_id, other_connection = client_lock_database
@@ -4199,7 +4449,7 @@ def test_error_after_client_lock_rolls_back_and_releases_the_client(
     monkeypatch.setattr("carelog.services.visits.insert_visit", insert_then_fail)
 
     with pytest.raises(RuntimeError, match="Simulated failure"):
-        add_planned_visit(client_id, service_id, planned_date=date(2026, 11, 20))
+        add_planned_visit(user_ids["worker"], client_id, service_id, planned_date=date(2026, 11, 20))
 
     # The inserted visit was rolled back
     cursor.execute("SELECT COUNT(*) FROM visits WHERE client_id = %s", (client_id,))
@@ -4225,6 +4475,7 @@ def test_add_planned_visit_rejects_invalid_price():
             add_planned_visit(
                 1,
                 1,
+                1,
                 planned_week=date(2026, 11, 23),
                 price=price
             )
@@ -4233,6 +4484,7 @@ def test_add_planned_visit_rejects_invalid_price():
 @pytest.fixture
 def rate_database(
     postgres_cursor_with_visit_notes,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -4251,14 +4503,14 @@ def rate_database(
     monkeypatch.setattr("carelog.services.visits.get_postgres_connection", get_test_connection)
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name, default_hourly_rate) VALUES (%s, %s) RETURNING id",
-        ("Siivous", Decimal("35.00"))
+        "INSERT INTO services (name, default_hourly_rate, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Siivous", Decimal("35.00"), user_ids["worker"])
     )
     service_id = cursor.fetchone()[0]
 
@@ -4270,22 +4522,24 @@ def get_saved_price(cursor, visit_id):
     return cursor.fetchone()[0]
 
 
-def test_add_planned_visit_saves_service_default_rate(rate_database):
+def test_add_planned_visit_saves_service_default_rate(rate_database, user_ids):
     cursor, client_id, service_id = rate_database
 
-    visit_id = add_planned_visit(client_id, service_id, planned_date=date(2026, 11, 20))
+    visit_id = add_planned_visit(user_ids["worker"], client_id, service_id, planned_date=date(2026, 11, 20))
 
     assert get_saved_price(cursor, visit_id) == Decimal("35.00")
-    assert get_visit(visit_id)["price"] == Decimal("35.00")
+    assert get_visit(user_ids["worker"], visit_id)["price"] == Decimal("35.00")
 
 
-def test_given_rate_overrides_service_default_rate(rate_database):
+def test_given_rate_overrides_service_default_rate(rate_database, user_ids):
     cursor, client_id, service_id = rate_database
 
     planned_id = add_planned_visit(
+        user_ids["worker"],
         client_id, service_id, planned_date=date(2026, 11, 20), price=Decimal("40.00")
     )
     completed_id = add_completed_visit(
+        user_ids["worker"],
         client_id, service_id, completed_date=date(2026, 11, 20), price=40
     )
 
@@ -4293,19 +4547,20 @@ def test_given_rate_overrides_service_default_rate(rate_database):
     assert get_saved_price(cursor, completed_id) == Decimal("40.00")
 
 
-def test_add_completed_visit_saves_service_default_rate(rate_database):
+def test_add_completed_visit_saves_service_default_rate(rate_database, user_ids):
     cursor, client_id, service_id = rate_database
 
-    visit_id = add_completed_visit(client_id, service_id, completed_date=date(2026, 11, 20))
+    visit_id = add_completed_visit(user_ids["worker"], client_id, service_id, completed_date=date(2026, 11, 20))
 
     assert get_saved_price(cursor, visit_id) == Decimal("35.00")
 
 
-def test_service_rate_change_does_not_change_saved_visits(rate_database):
+def test_service_rate_change_does_not_change_saved_visits(rate_database, user_ids):
     cursor, client_id, service_id = rate_database
 
-    visit_a = add_planned_visit(client_id, service_id, planned_date=date(2026, 11, 20))
+    visit_a = add_planned_visit(user_ids["worker"], client_id, service_id, planned_date=date(2026, 11, 20))
     visit_b = add_planned_visit(
+        user_ids["worker"],
         client_id, service_id, planned_date=date(2026, 11, 20), price=Decimal("40.00")
     )
 
@@ -4319,40 +4574,42 @@ def test_service_rate_change_does_not_change_saved_visits(rate_database):
     assert get_saved_price(cursor, visit_b) == Decimal("40.00")
 
     # A new visit gets the new default rate
-    visit_c = add_planned_visit(client_id, service_id, planned_date=date(2026, 11, 20))
+    visit_c = add_planned_visit(user_ids["worker"], client_id, service_id, planned_date=date(2026, 11, 20))
 
     assert get_saved_price(cursor, visit_c) == Decimal("45.00")
 
 
-def test_complete_visit_keeps_hourly_rate(rate_database):
+def test_complete_visit_keeps_hourly_rate(rate_database, user_ids):
     cursor, client_id, service_id = rate_database
 
-    default_rate_id = add_planned_visit(client_id, service_id, planned_date=date(2026, 11, 20))
+    default_rate_id = add_planned_visit(user_ids["worker"], client_id, service_id, planned_date=date(2026, 11, 20))
     own_rate_id = add_planned_visit(
+        user_ids["worker"],
         client_id, service_id, planned_date=date(2026, 11, 20), price=Decimal("40.00")
     )
 
     # The service rate changes before the visits are completed
     cursor.execute("UPDATE services SET default_hourly_rate = 45 WHERE id = %s", (service_id,))
 
-    assert complete_visit(default_rate_id, duration_minutes=120) is True
-    assert complete_visit(own_rate_id, duration_minutes=180) is True
+    assert complete_visit(user_ids["worker"], default_rate_id, duration_minutes=120) is True
+    assert complete_visit(user_ids["worker"], own_rate_id, duration_minutes=180) is True
 
     assert get_saved_price(cursor, default_rate_id) == Decimal("35.00")
     assert get_saved_price(cursor, own_rate_id) == Decimal("40.00")
 
 
-def test_missing_default_rate_saves_no_price(rate_database):
+def test_missing_default_rate_saves_no_price(rate_database, user_ids):
     cursor, client_id, service_id = rate_database
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Ulkoilu",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Ulkoilu", user_ids["worker"])
     )
     service_without_rate = cursor.fetchone()[0]
 
-    planned_id = add_planned_visit(client_id, service_without_rate, planned_date=date(2026, 11, 20))
+    planned_id = add_planned_visit(user_ids["worker"], client_id, service_without_rate, planned_date=date(2026, 11, 20))
     completed_id = add_completed_visit(
+        user_ids["worker"],
         client_id, service_without_rate, completed_date=date(2026, 11, 20)
     )
 
@@ -4361,22 +4618,23 @@ def test_missing_default_rate_saves_no_price(rate_database):
     assert get_saved_price(cursor, completed_id) is None
 
 
-def test_zero_rate_is_not_a_missing_rate(rate_database):
+def test_zero_rate_is_not_a_missing_rate(rate_database, user_ids):
     cursor, client_id, service_id = rate_database
 
     # A given rate of 0 is kept and the default 35.00 is not used
-    visit_id = add_planned_visit(client_id, service_id, planned_date=date(2026, 11, 20), price=0)
+    visit_id = add_planned_visit(user_ids["worker"], client_id, service_id, planned_date=date(2026, 11, 20), price=0)
 
     assert get_saved_price(cursor, visit_id) == Decimal("0.00")
 
     # A default rate of 0 is copied as 0, not as a missing rate
     cursor.execute(
-        "INSERT INTO services (name, default_hourly_rate) VALUES (%s, %s) RETURNING id",
-        ("Vapaaehtoinen apu", Decimal("0.00"))
+        "INSERT INTO services (name, default_hourly_rate, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Vapaaehtoinen apu", Decimal("0.00"), user_ids["worker"])
     )
     free_service_id = cursor.fetchone()[0]
 
     free_visit_id = add_completed_visit(
+        user_ids["worker"],
         client_id, free_service_id, completed_date=date(2026, 11, 20)
     )
 
@@ -4387,15 +4645,316 @@ def test_zero_rate_is_not_a_missing_rate(rate_database):
 # 1 = urgent, 2 = normal, 3 = low
 
 
-def test_add_and_update_visit_accept_every_priority(rate_database):
+def test_add_and_update_visit_accept_every_priority(rate_database, user_ids):
     cursor, client_id, service_id = rate_database
 
     for priority in (1, 2, 3):
         visit_id = add_planned_visit(
+            user_ids["worker"],
             client_id, service_id, planned_date=date(2026, 11, 27), priority=priority
         )
-        assert get_visit(visit_id)["priority"] == priority
+        assert get_visit(user_ids["worker"], visit_id)["priority"] == priority
 
     for priority in (3, 1, 2):
-        assert update_visit(visit_id, {"priority": priority}) is True
-        assert get_visit(visit_id)["priority"] == priority
+        assert update_visit(user_ids["worker"], visit_id, {"priority": priority}) is True
+        assert get_visit(user_ids["worker"], visit_id)["priority"] == priority
+
+
+# OWNERSHIP TESTS
+# visits.user_id is the worker of the visit. A worker handles only their
+# own visits, an admin the visits of every worker. rate_database gives a
+# client and a service.
+
+
+def get_visit_users(cursor, visit_id):
+    cursor.execute(
+        "SELECT user_id, created_by_user_id, updated_by_user_id FROM visits WHERE id = %s",
+        (visit_id,)
+    )
+    return cursor.fetchone()
+
+
+def test_visit_functions_reject_invalid_user_ids(monkeypatch):
+    # The user check itself is tested in test_user_validation.py. Invalid
+    # IDs are rejected before any database connection.
+    def connection_not_allowed():
+        raise RuntimeError("Unexpected database connection")
+
+    monkeypatch.setattr("carelog.services.visits.get_postgres_connection", connection_not_allowed)
+
+    for user_id in (None, True, "1", 0):
+        with pytest.raises(ValueError):
+            add_planned_visit(user_id, 1, 1, planned_week=date(2026, 11, 23))
+
+        with pytest.raises(ValueError):
+            get_visit(user_id, 1)
+
+        with pytest.raises(ValueError):
+            update_visit(user_id, 1, {"priority": 1})
+
+        with pytest.raises(ValueError):
+            cancel_visit(user_id, 1)
+
+        with pytest.raises(ValueError):
+            change_visit_worker(1, 1, user_id)
+
+    # user_id=None means the actor, so only the other values are invalid
+    for user_id in (True, "1", 0):
+        with pytest.raises(ValueError):
+            add_completed_visit(1, 1, 1, completed_date=date(2026, 11, 18), user_id=user_id)
+
+        with pytest.raises(ValueError):
+            get_week_visits(1, date(2026, 11, 23), user_id=user_id)
+
+
+def test_worker_and_admin_choose_the_worker_of_new_visits(rate_database, user_ids):
+    cursor, client_id, service_id = rate_database
+    worker_id = user_ids["worker"]
+    other_worker_id = user_ids["other_worker"]
+    admin_id = user_ids["admin"]
+
+    # Without user_id the actor is the worker
+    own_visit_id = add_planned_visit(worker_id, client_id, service_id, planned_date=date(2026, 11, 25))
+    assert get_visit_users(cursor, own_visit_id) == (worker_id, worker_id, None)
+
+    # A worker cannot add a visit for another worker
+    with pytest.raises(PermissionError):
+        add_planned_visit(
+            worker_id, client_id, service_id, planned_date=date(2026, 11, 25), user_id=other_worker_id
+        )
+
+    # An admin can, and the creator is the admin
+    planned_id = add_planned_visit(
+        admin_id, client_id, service_id, planned_date=date(2026, 11, 25), user_id=other_worker_id
+    )
+    completed_id = add_completed_visit(
+        admin_id, client_id, service_id, completed_date=date(2026, 11, 18), user_id=worker_id
+    )
+
+    assert get_visit_users(cursor, planned_id) == (other_worker_id, admin_id, None)
+    assert get_visit_users(cursor, completed_id) == (worker_id, admin_id, None)
+
+    # The worker must be an active, existing user
+    with pytest.raises(PermissionError):
+        add_completed_visit(
+            admin_id, client_id, service_id, completed_date=date(2026, 11, 18),
+            user_id=user_ids["inactive"]
+        )
+
+    with pytest.raises(ValueError, match="User not found"):
+        add_planned_visit(
+            admin_id, client_id, service_id, planned_date=date(2026, 11, 25),
+            user_id=admin_id + worker_id + 1000
+        )
+
+    # The rejected visits were not saved
+    cursor.execute("SELECT COUNT(*) FROM visits")
+    assert cursor.fetchone()[0] == 3
+
+
+def test_visit_searches_are_limited_to_own_visits(rate_database, user_ids):
+    cursor, client_id, service_id = rate_database
+    worker_id = user_ids["worker"]
+    other_worker_id = user_ids["other_worker"]
+    admin_id = user_ids["admin"]
+    week = date(2026, 11, 23)
+
+    own_id = add_planned_visit(worker_id, client_id, service_id, planned_date=date(2026, 11, 25))
+    other_id = add_planned_visit(other_worker_id, client_id, service_id, planned_date=date(2026, 11, 26))
+
+    def ids_of(visits):
+        ids = []
+
+        for visit in visits:
+            ids.append(visit["id"])
+
+        return ids
+
+    # One visit: another worker's visit looks like a missing visit
+    assert get_visit(worker_id, own_id)["user_id"] == worker_id
+    assert get_visit(worker_id, other_id) is None
+    assert get_visit(admin_id, other_id)["user_id"] == other_worker_id
+
+    # Lists: a worker gets only their own visits, an admin every visit or
+    # the visits of one worker
+    assert ids_of(get_client_visits(worker_id, client_id)) == [own_id]
+    assert ids_of(get_planned_visits(worker_id)) == [own_id]
+    assert ids_of(get_week_visits(worker_id, week)) == [own_id]
+
+    assert ids_of(get_planned_visits(admin_id)) == [own_id, other_id]
+    assert ids_of(get_week_visits(admin_id, week)) == [own_id, other_id]
+    assert ids_of(get_client_visits(admin_id, client_id, user_id=other_worker_id)) == [other_id]
+    assert ids_of(get_week_visits(worker_id, week, user_id=worker_id)) == [own_id]
+
+    # A worker cannot get another worker's visits by giving their ID
+    with pytest.raises(PermissionError):
+        get_client_visits(worker_id, client_id, user_id=other_worker_id)
+
+    with pytest.raises(PermissionError):
+        get_planned_visits(worker_id, user_id=other_worker_id)
+
+    with pytest.raises(PermissionError):
+        get_week_visits(worker_id, week, user_id=other_worker_id)
+
+
+def test_worker_cannot_change_another_workers_visit(rate_database, user_ids):
+    cursor, client_id, service_id = rate_database
+    worker_id = user_ids["worker"]
+    other_worker_id = user_ids["other_worker"]
+    admin_id = user_ids["admin"]
+
+    # The admin plans one visit for each worker
+    own_id = add_planned_visit(
+        admin_id, client_id, service_id, planned_date=date(2026, 11, 25), user_id=worker_id
+    )
+    other_id = add_planned_visit(
+        admin_id, client_id, service_id, planned_date=date(2026, 11, 26), user_id=other_worker_id
+    )
+
+    # Another worker's visit is treated as a missing visit
+    assert update_visit(worker_id, other_id, {"priority": 1}) is False
+    assert complete_visit(worker_id, other_id, completed_date=date(2026, 11, 18)) is False
+    assert cancel_visit(worker_id, other_id) is False
+
+    cursor.execute("SELECT status, priority FROM visits WHERE id = %s", (other_id,))
+    assert cursor.fetchone() == ("planned", 2)
+    assert get_visit_users(cursor, other_id) == (other_worker_id, admin_id, None)
+
+    # The worker updates their own visit: the creator stays the admin
+    assert update_visit(worker_id, own_id, {"priority": 1}) is True
+    assert get_visit_users(cursor, own_id) == (worker_id, admin_id, worker_id)
+
+    # The admin completes and cancels visits of the workers. The worker
+    # of a visit does not change.
+    assert complete_visit(admin_id, own_id, completed_date=date(2026, 11, 18)) is True
+    assert cancel_visit(admin_id, other_id) is True
+
+    assert get_visit_users(cursor, own_id) == (worker_id, admin_id, admin_id)
+    assert get_visit_users(cursor, other_id) == (other_worker_id, admin_id, admin_id)
+
+
+def test_admin_changes_the_worker_of_a_planned_visit(rate_database, user_ids):
+    cursor, client_id, service_id = rate_database
+    worker_id = user_ids["worker"]
+    other_worker_id = user_ids["other_worker"]
+    admin_id = user_ids["admin"]
+
+    visit_id = add_planned_visit(worker_id, client_id, service_id, planned_date=date(2026, 11, 25))
+
+    # The expense of the visit has its own worker
+    cursor.execute(
+        "INSERT INTO expenses (visit_id, expense_date, amount, category, "
+        "user_id, created_by_user_id) "
+        "VALUES (%s, '2026-11-25', 10, 'customer', %s, %s) RETURNING id",
+        (visit_id, worker_id, worker_id)
+    )
+    expense_id = cursor.fetchone()[0]
+
+    # Only an admin may change the worker
+    with pytest.raises(PermissionError):
+        change_visit_worker(worker_id, visit_id, other_worker_id)
+
+    # The new worker must be an active, existing user
+    with pytest.raises(PermissionError):
+        change_visit_worker(admin_id, visit_id, user_ids["inactive"])
+
+    with pytest.raises(ValueError, match="User not found"):
+        change_visit_worker(admin_id, visit_id, admin_id + worker_id + 1000)
+
+    assert get_visit_users(cursor, visit_id) == (worker_id, worker_id, None)
+
+    assert change_visit_worker(admin_id, visit_id, other_worker_id) is True
+    assert get_visit_users(cursor, visit_id) == (other_worker_id, worker_id, admin_id)
+
+    cursor.execute("SELECT user_id FROM expenses WHERE id = %s", (expense_id,))
+    assert cursor.fetchone()[0] == worker_id
+
+    # The visit now belongs to the other worker
+    assert get_visit(worker_id, visit_id) is None
+
+    assert change_visit_worker(admin_id, visit_id + 1000, worker_id) is False
+
+
+def test_worker_of_completed_or_cancelled_visit_cannot_change(rate_database, user_ids):
+    cursor, client_id, service_id = rate_database
+    worker_id = user_ids["worker"]
+    admin_id = user_ids["admin"]
+
+    completed_id = add_completed_visit(worker_id, client_id, service_id, completed_date=date(2026, 11, 18))
+    cancelled_id = add_planned_visit(worker_id, client_id, service_id, planned_date=date(2026, 11, 25))
+    assert cancel_visit(worker_id, cancelled_id) is True
+
+    for visit_id in (completed_id, cancelled_id):
+        with pytest.raises(ValueError, match="Only the worker of a planned visit"):
+            change_visit_worker(admin_id, visit_id, user_ids["other_worker"])
+
+        assert get_visit_users(cursor, visit_id)[0] == worker_id
+
+
+def test_deactivated_worker_keeps_visit_history(rate_database, user_ids):
+    cursor, client_id, service_id = rate_database
+    worker_id = user_ids["worker"]
+
+    visit_id = add_completed_visit(worker_id, client_id, service_id, completed_date=date(2026, 11, 18))
+
+    cursor.execute("UPDATE users SET is_active = FALSE WHERE id = %s", (worker_id,))
+
+    # The visit stays, but the deactivated user cannot use the services
+    assert get_visit(user_ids["admin"], visit_id)["user_id"] == worker_id
+
+    with pytest.raises(PermissionError):
+        get_visit(worker_id, visit_id)
+
+
+def test_worker_change_waits_for_completion(lock_database, user_ids):
+    cursor, visit_id, other_connection = lock_database
+
+    # The other connection completes the visit but does not commit yet
+    other_connection.execute(
+        "UPDATE visits SET status = 'completed' WHERE id = %s",
+        (visit_id,)
+    )
+
+    thread, done, outcome = start_in_thread(
+        change_visit_worker, user_ids["admin"], visit_id, user_ids["other_worker"]
+    )
+
+    wait_until_waiting_for_lock(cursor)
+    assert not done.is_set()
+
+    other_connection.commit()
+
+    assert done.wait(timeout=10)
+    thread.join(timeout=10)
+
+    # The status of the locked row decides: the completed visit keeps
+    # its worker
+    assert isinstance(outcome.get("error"), ValueError)
+    assert get_visit_users(cursor, visit_id)[0] == user_ids["worker"]
+
+
+def test_completion_waits_for_worker_change(lock_database, user_ids):
+    cursor, visit_id, other_connection = lock_database
+
+    # The other connection gives the visit to another worker but does not
+    # commit yet
+    other_connection.execute(
+        "UPDATE visits SET user_id = %s WHERE id = %s",
+        (user_ids["other_worker"], visit_id)
+    )
+
+    thread, done, outcome = start_in_thread(complete_visit, user_ids["worker"], visit_id)
+
+    wait_until_waiting_for_lock(cursor)
+    assert not done.is_set()
+
+    other_connection.commit()
+
+    assert done.wait(timeout=10)
+    thread.join(timeout=10)
+
+    # The locked row is checked again: it is no longer the worker's visit
+    assert outcome == {"result": False}
+
+    cursor.execute("SELECT status FROM visits WHERE id = %s", (visit_id,))
+    assert cursor.fetchone()[0] == "planned"

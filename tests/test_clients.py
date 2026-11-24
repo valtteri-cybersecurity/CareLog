@@ -7,67 +7,68 @@ from carelog.services.clients import add_client, get_client, get_clients, update
 
 def test_add_client_rejects_empty_first_name():
     with pytest.raises(ValueError):
-        add_client("", "Virtanen")
+        add_client(1, "", "Virtanen")
 
 
 def test_add_client_rejects_empty_last_name():
     with pytest.raises(ValueError):
-        add_client("Hilma", "")
+        add_client(1, "Hilma", "")
 
 
 def test_add_client_rejects_spaces_first_name():
     with pytest.raises(ValueError):
-        add_client("    ", "Virtanen")
+        add_client(1, "    ", "Virtanen")
 
 
 def test_add_client_rejects_spaces_last_name():
     with pytest.raises(ValueError):
-        add_client("Pena", "    ")
+        add_client(1, "Pena", "    ")
 
 
 def test_add_client_rejects_over_length_first_name():
     test_name = "A" * 101
 
     with pytest.raises(ValueError):
-        add_client(test_name, "Virtanen")
+        add_client(1, test_name, "Virtanen")
 
 
 def test_add_client_rejects_over_length_last_name():
     test_name = "A" * 101
 
     with pytest.raises(ValueError):
-        add_client("Arvo", test_name)
+        add_client(1, "Arvo", test_name)
 
 
 def test_add_client_rejects_invalid_type_first_name():
     with pytest.raises(ValueError):
-        add_client(69, "Mauno")
+        add_client(1, 69, "Mauno")
 
 
 def test_add_client_rejects_invalid_type_last_name():
     with pytest.raises(ValueError):
-        add_client("Rauno", 88)
+        add_client(1, "Rauno", 88)
 
 
 def test_add_client_rejects_invalid_phone_type():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", 123456)
+        add_client(1, "Hilma", "Virtanen", 123456)
 
 
 def test_add_client_rejects_over_length_phone():
     test_phone = "1" * 51
 
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", test_phone)
+        add_client(1, "Hilma", "Virtanen", test_phone)
 
 
 def test_add_client_rejects_spaces_phone():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", "   ")
+        add_client(1, "Hilma", "Virtanen", "   ")
 
 
 def test_add_client_saves_to_database(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -84,7 +85,7 @@ def test_add_client_saves_to_database(
         get_test_connection
     )
 
-    client_id = add_client("Hilma", "Virtanen")
+    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen")
 
     assert isinstance(client_id, int)
     assert client_id > 0
@@ -103,6 +104,7 @@ def test_add_client_saves_to_database(
 
 def test_add_client_rolls_back_on_insert_error(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -116,6 +118,7 @@ def test_add_client_rolls_back_on_insert_error(
 
     def insert_then_fail(
         cursor,
+        created_by_user_id,
         first_name,
         last_name,
         phone,
@@ -129,13 +132,13 @@ def test_add_client_rolls_back_on_insert_error(
             """
             INSERT INTO clients (
                 first_name, last_name, phone, email, street_address,
-                postal_code, city, distance_from_home_km
+                postal_code, city, distance_from_home_km, created_by_user_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 first_name, last_name, phone, email, street_address,
-                postal_code, city, distance_from_home_km
+                postal_code, city, distance_from_home_km, created_by_user_id
             )
         )
 
@@ -152,7 +155,7 @@ def test_add_client_rolls_back_on_insert_error(
     )
 
     with pytest.raises(RuntimeError, match="Simulated insert failure"):
-        add_client("Hilma", "Virtanen")
+        add_client(user_ids["worker"], "Hilma", "Virtanen")
 
     cursor.execute(
         """
@@ -168,6 +171,7 @@ def test_add_client_rolls_back_on_insert_error(
 
 def test_add_client_strips_whitespace(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -184,7 +188,7 @@ def test_add_client_strips_whitespace(
         get_test_connection
     )
 
-    client_id = add_client("  Hilma  ", "  Virtanen  ")
+    client_id = add_client(user_ids["worker"], "  Hilma  ", "  Virtanen  ")
 
     cursor.execute(
         """
@@ -200,6 +204,7 @@ def test_add_client_strips_whitespace(
 
 def test_add_client_saves_phone(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -217,6 +222,7 @@ def test_add_client_saves_phone(
     )
 
     client_id = add_client(
+        user_ids["worker"],
         "Hilma",
         "Virtanen",
         " 0401234567 "
@@ -236,6 +242,7 @@ def test_add_client_saves_phone(
 
 def test_add_client_saves_null_phone(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -252,7 +259,7 @@ def test_add_client_saves_null_phone(
         get_test_connection
     )
 
-    client_id = add_client("Hilma", "Virtanen")
+    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen")
 
     cursor.execute(
         """
@@ -268,6 +275,7 @@ def test_add_client_saves_null_phone(
 
 def test_add_client_saves_empty_phone_as_null(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -284,7 +292,7 @@ def test_add_client_saves_empty_phone_as_null(
         get_test_connection
     )
 
-    client_id = add_client("Hilma", "Virtanen", "")
+    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen", "")
 
     cursor.execute(
         """
@@ -301,23 +309,24 @@ def test_add_client_saves_empty_phone_as_null(
 
 def test_add_client_rejects_invalid_email_type():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", email=123456)
+        add_client(1, "Hilma", "Virtanen", email=123456)
 
 
 def test_add_client_rejects_over_length_email():
     test_email = "A" * 256
 
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", email=test_email)
+        add_client(1, "Hilma", "Virtanen", email=test_email)
 
 
 def test_add_client_rejects_spaces_email():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", email="   ")
+        add_client(1, "Hilma", "Virtanen", email="   ")
 
 
 def test_add_client_saves_email(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -335,6 +344,7 @@ def test_add_client_saves_email(
     )
 
     client_id = add_client(
+        user_ids["worker"],
         "Hilma",
         "Virtanen",
         email=" hilma@example.com "
@@ -354,6 +364,7 @@ def test_add_client_saves_email(
 
 def test_add_client_saves_null_email(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -370,7 +381,7 @@ def test_add_client_saves_null_email(
         get_test_connection
     )
 
-    client_id = add_client("Hilma", "Virtanen")
+    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen")
 
     cursor.execute(
         """
@@ -386,6 +397,7 @@ def test_add_client_saves_null_email(
 
 def test_add_client_saves_empty_email_as_null(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -403,6 +415,7 @@ def test_add_client_saves_empty_email_as_null(
     )
 
     client_id = add_client(
+        user_ids["worker"],
         "Hilma",
         "Virtanen",
         email=""
@@ -422,48 +435,49 @@ def test_add_client_saves_empty_email_as_null(
 
 def test_add_client_rejects_email_without_at():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", email="hilma.example.com")
+        add_client(1, "Hilma", "Virtanen", email="hilma.example.com")
 
 
 def test_add_client_rejects_email_multiple_at():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", email="hilma@@example.com")
+        add_client(1, "Hilma", "Virtanen", email="hilma@@example.com")
 
 
 def test_add_client_rejects_email_without_local():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", email="@example.com")
+        add_client(1, "Hilma", "Virtanen", email="@example.com")
 
 
 def test_add_client_rejects_email_without_domain():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", email="hilma@")
+        add_client(1, "Hilma", "Virtanen", email="hilma@")
 
 
 def test_add_client_rejects_email_with_whitespace():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", email="hilma@\texample.com")
+        add_client(1, "Hilma", "Virtanen", email="hilma@\texample.com")
 
 
 def test_add_client_rejects_invalid_street_address_type():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", street_address=12345)
+        add_client(1, "Hilma", "Virtanen", street_address=12345)
 
 
 def test_add_client_rejects_over_length_street_address():
     test_address = "A" * 256
 
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", street_address=test_address)
+        add_client(1, "Hilma", "Virtanen", street_address=test_address)
 
 
 def test_add_client_rejects_spaces_street_address():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", street_address="   ")
+        add_client(1, "Hilma", "Virtanen", street_address="   ")
 
 
 def test_add_client_saves_street_address(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -481,6 +495,7 @@ def test_add_client_saves_street_address(
     )
 
     client_id = add_client(
+        user_ids["worker"],
         "Hilma",
         "Virtanen",
         street_address="  Kauppakatu 12  "
@@ -500,68 +515,69 @@ def test_add_client_saves_street_address(
 
 def test_add_client_rejects_invalid_postal_code_type():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", postal_code=12345)
+        add_client(1, "Hilma", "Virtanen", postal_code=12345)
 
 
 def test_add_client_rejects_over_length_postal_code():
     test_postal_code = "1" * 21
 
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", postal_code=test_postal_code)
+        add_client(1, "Hilma", "Virtanen", postal_code=test_postal_code)
 
 
 def test_add_client_rejects_spaces_postal_code():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", postal_code="   ")
+        add_client(1, "Hilma", "Virtanen", postal_code="   ")
 
 
 def test_add_client_rejects_invalid_city_type():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", city=12345)
+        add_client(1, "Hilma", "Virtanen", city=12345)
 
 
 def test_add_client_rejects_over_length_city():
     test_city = "A" * 101
 
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", city=test_city)
+        add_client(1, "Hilma", "Virtanen", city=test_city)
 
 
 def test_add_client_rejects_spaces_city():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", city="   ")
+        add_client(1, "Hilma", "Virtanen", city="   ")
 
 
 def test_add_client_rejects_invalid_distance_type():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", distance_from_home_km="3.5")
+        add_client(1, "Hilma", "Virtanen", distance_from_home_km="3.5")
 
 
 def test_add_client_rejects_too_many_decimals_in_distance():
     # DECIMAL(10,2) would round 4.567 to 4.57 without an error
     with pytest.raises(ValueError, match="two decimal places"):
-        add_client("Hilma", "Virtanen", distance_from_home_km=4.567)
+        add_client(1, "Hilma", "Virtanen", distance_from_home_km=4.567)
 
 
 def test_add_client_rejects_negative_distance():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", distance_from_home_km=-3.5)
+        add_client(1, "Hilma", "Virtanen", distance_from_home_km=-3.5)
 
 
 def test_add_client_rejects_infinite_distance():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", distance_from_home_km=float("inf"))
+        add_client(1, "Hilma", "Virtanen", distance_from_home_km=float("inf"))
 
 
 def test_add_client_rejects_over_limit_distance():
     with pytest.raises(ValueError):
-        add_client("Hilma", "Virtanen", distance_from_home_km=100000000.0)
+        add_client(1, "Hilma", "Virtanen", distance_from_home_km=100000000.0)
 
 # Street address: optional values
 
 
 def test_add_client_saves_null_street_address(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -578,7 +594,7 @@ def test_add_client_saves_null_street_address(
         get_test_connection
     )
 
-    client_id = add_client("Hilma", "Virtanen")
+    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen")
 
     cursor.execute(
         "SELECT street_address FROM clients WHERE id = %s",
@@ -590,6 +606,7 @@ def test_add_client_saves_null_street_address(
 
 def test_add_client_saves_empty_street_address_as_null(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -606,7 +623,7 @@ def test_add_client_saves_empty_street_address_as_null(
         get_test_connection
     )
 
-    client_id = add_client("Hilma", "Virtanen", street_address="")
+    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen", street_address="")
 
     cursor.execute(
         "SELECT street_address FROM clients WHERE id = %s",
@@ -621,6 +638,7 @@ def test_add_client_saves_empty_street_address_as_null(
 
 def test_add_client_saves_postal_code(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -637,7 +655,7 @@ def test_add_client_saves_postal_code(
         get_test_connection
     )
 
-    client_id = add_client("Hilma", "Virtanen", postal_code=" 00100 ")
+    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen", postal_code=" 00100 ")
 
     cursor.execute(
         "SELECT postal_code FROM clients WHERE id = %s",
@@ -649,6 +667,7 @@ def test_add_client_saves_postal_code(
 
 def test_add_client_saves_null_postal_code(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -665,7 +684,7 @@ def test_add_client_saves_null_postal_code(
         get_test_connection
     )
 
-    client_id = add_client("Hilma", "Virtanen")
+    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen")
 
     cursor.execute(
         "SELECT postal_code FROM clients WHERE id = %s",
@@ -677,6 +696,7 @@ def test_add_client_saves_null_postal_code(
 
 def test_add_client_saves_empty_postal_code_as_null(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -693,7 +713,7 @@ def test_add_client_saves_empty_postal_code_as_null(
         get_test_connection
     )
 
-    client_id = add_client("Hilma", "Virtanen", postal_code="")
+    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen", postal_code="")
 
     cursor.execute(
         "SELECT postal_code FROM clients WHERE id = %s",
@@ -708,6 +728,7 @@ def test_add_client_saves_empty_postal_code_as_null(
 
 def test_add_client_saves_city(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -724,7 +745,7 @@ def test_add_client_saves_city(
         get_test_connection
     )
 
-    client_id = add_client("Hilma", "Virtanen", city=" Tampere ")
+    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen", city=" Tampere ")
 
     cursor.execute(
         "SELECT city FROM clients WHERE id = %s",
@@ -736,6 +757,7 @@ def test_add_client_saves_city(
 
 def test_add_client_saves_null_city(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -752,7 +774,7 @@ def test_add_client_saves_null_city(
         get_test_connection
     )
 
-    client_id = add_client("Hilma", "Virtanen")
+    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen")
 
     cursor.execute(
         "SELECT city FROM clients WHERE id = %s",
@@ -764,6 +786,7 @@ def test_add_client_saves_null_city(
 
 def test_add_client_saves_empty_city_as_null(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -780,7 +803,7 @@ def test_add_client_saves_empty_city_as_null(
         get_test_connection
     )
 
-    client_id = add_client("Hilma", "Virtanen", city="")
+    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen", city="")
 
     cursor.execute(
         "SELECT city FROM clients WHERE id = %s",
@@ -795,6 +818,7 @@ def test_add_client_saves_empty_city_as_null(
 
 def test_add_client_saves_distance(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -812,6 +836,7 @@ def test_add_client_saves_distance(
     )
 
     client_id = add_client(
+        user_ids["worker"],
         "Hilma", "Virtanen", distance_from_home_km=3.5
     )
 
@@ -825,6 +850,7 @@ def test_add_client_saves_distance(
 
 def test_client_distance_can_be_zero(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -842,7 +868,7 @@ def test_client_distance_can_be_zero(
     )
 
     # 0 km is allowed, as in the database CHECK constraint
-    client_id = add_client("Hilma", "Virtanen", distance_from_home_km=0)
+    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen", distance_from_home_km=0)
 
     cursor.execute(
         "SELECT distance_from_home_km FROM clients WHERE id = %s",
@@ -850,7 +876,7 @@ def test_client_distance_can_be_zero(
     )
     assert str(cursor.fetchone()[0]) == "0.00"
 
-    assert update_client(client_id, {"distance_from_home_km": Decimal("4.57")}) is True
+    assert update_client(user_ids["worker"], client_id, {"distance_from_home_km": Decimal("4.57")}) is True
 
     cursor.execute(
         "SELECT distance_from_home_km FROM clients WHERE id = %s",
@@ -858,7 +884,7 @@ def test_client_distance_can_be_zero(
     )
     assert cursor.fetchone()[0] == Decimal("4.57")
 
-    assert update_client(client_id, {"distance_from_home_km": 0.0}) is True
+    assert update_client(user_ids["worker"], client_id, {"distance_from_home_km": 0.0}) is True
 
     cursor.execute(
         "SELECT distance_from_home_km FROM clients WHERE id = %s",
@@ -869,6 +895,7 @@ def test_client_distance_can_be_zero(
 
 def test_add_client_saves_null_distance(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -885,7 +912,7 @@ def test_add_client_saves_null_distance(
         get_test_connection
     )
 
-    client_id = add_client("Hilma", "Virtanen")
+    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen")
 
     cursor.execute(
         "SELECT distance_from_home_km FROM clients WHERE id = %s",
@@ -925,6 +952,7 @@ def test_get_client_rejects_negative_id():
 
 def test_get_client_returns_client(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -943,11 +971,11 @@ def test_get_client_returns_client(
 
     cursor.execute(
         """
-        INSERT INTO clients (first_name, last_name, city)
-        VALUES (%s, %s, %s)
+        INSERT INTO clients (first_name, last_name, city, created_by_user_id)
+        VALUES (%s, %s, %s, %s)
         RETURNING id
         """,
-        ("Hilma", "Virtanen", "Tampere")
+        ("Hilma", "Virtanen", "Tampere", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
@@ -1045,6 +1073,7 @@ def test_get_clients_returns_empty_list(
 
 def test_get_clients_returns_clients_in_name_order(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1063,11 +1092,16 @@ def test_get_clients_returns_clients_in_name_order(
 
     cursor.execute(
         """
-        INSERT INTO clients (first_name, last_name)
-        VALUES (%s, %s), (%s, %s)
+        INSERT INTO clients (first_name, last_name, created_by_user_id)
+        VALUES (%s, %s, %s), (%s, %s, %s)
         """,
-        ("Hilma", "Virtanen", "Aino", "Aalto")
+        (
+            "Hilma", "Virtanen", user_ids["worker"],
+            "Aino", "Aalto", user_ids["other_worker"],
+        )
     )
+
+    # Clients are shared: every client is listed, whoever created it.
 
     clients = get_clients()
 
@@ -1082,6 +1116,7 @@ def test_get_clients_returns_clients_in_name_order(
 
 def test_get_clients_excludes_archived_clients(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1100,18 +1135,18 @@ def test_get_clients_excludes_archived_clients(
 
     cursor.execute(
         """
-        INSERT INTO clients (first_name, last_name)
-        VALUES (%s, %s)
+        INSERT INTO clients (first_name, last_name, created_by_user_id)
+        VALUES (%s, %s, %s)
         """,
-        ("Hilma", "Virtanen")
+        ("Hilma", "Virtanen", user_ids["worker"])
     )
 
     cursor.execute(
         """
-        INSERT INTO clients (first_name, last_name, archived_at)
-        VALUES (%s, %s, NOW())
+        INSERT INTO clients (first_name, last_name, archived_at, created_by_user_id)
+        VALUES (%s, %s, NOW(), %s)
         """,
-        ("Aino", "Aalto")
+        ("Aino", "Aalto", user_ids["worker"])
     )
 
     clients = get_clients()
@@ -1170,42 +1205,43 @@ def test_get_clients_closes_connection_on_error(monkeypatch):
 
 def test_update_client_rejects_invalid_id():
     with pytest.raises(ValueError):
-        update_client("123", {"city": "Tampere"})
+        update_client(1, "123", {"city": "Tampere"})
 
 
 def test_update_client_rejects_zero_id():
     with pytest.raises(ValueError):
-        update_client(0, {"city": "Tampere"})
+        update_client(1, 0, {"city": "Tampere"})
 
 
 def test_update_client_rejects_boolean_id():
     with pytest.raises(ValueError):
-        update_client(True, {"city": "Tampere"})
+        update_client(1, True, {"city": "Tampere"})
 
 
 def test_update_client_rejects_empty_changes():
     with pytest.raises(ValueError):
-        update_client(1, {})
+        update_client(1, 1, {})
 
 
 def test_update_client_rejects_invalid_field():
     with pytest.raises(ValueError):
-        update_client(1, {"password_hash": "test"})
+        update_client(1, 1, {"password_hash": "test"})
 
 
 def test_update_client_rejects_empty_name():
     with pytest.raises(ValueError):
-        update_client(1, {"first_name": "   "})
+        update_client(1, 1, {"first_name": "   "})
 
 
 def test_update_client_rejects_invalid_distance():
     for distance in (-5, 4.567, "3.5", True, float("inf"), 100000000):
         with pytest.raises(ValueError):
-            update_client(1, {"distance_from_home_km": distance})
+            update_client(1, 1, {"distance_from_home_km": distance})
 
 
 def test_update_client_changes_city(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1224,16 +1260,17 @@ def test_update_client_changes_city(
 
     cursor.execute(
         """
-        INSERT INTO clients (first_name, last_name, city)
-        VALUES (%s, %s, %s)
+        INSERT INTO clients (first_name, last_name, city, created_by_user_id)
+        VALUES (%s, %s, %s, %s)
         RETURNING id
         """,
-        ("Hilma", "Virtanen", "Tampere")
+        ("Hilma", "Virtanen", "Tampere", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     updated = update_client(
+        user_ids["worker"],
         client_id,
         {"city": "  Helsinki  "}
     )
@@ -1258,6 +1295,7 @@ def test_update_client_changes_city(
 
 def test_update_client_clears_phone(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1276,16 +1314,17 @@ def test_update_client_clears_phone(
 
     cursor.execute(
         """
-        INSERT INTO clients (first_name, last_name, phone)
-        VALUES (%s, %s, %s)
+        INSERT INTO clients (first_name, last_name, phone, created_by_user_id)
+        VALUES (%s, %s, %s, %s)
         RETURNING id
         """,
-        ("Hilma", "Virtanen", "0401234567")
+        ("Hilma", "Virtanen", "0401234567", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     updated = update_client(
+        user_ids["worker"],
         client_id,
         {"phone": None}
     )
@@ -1306,6 +1345,7 @@ def test_update_client_clears_phone(
 
 def test_update_client_returns_false_if_not_found(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1323,6 +1363,7 @@ def test_update_client_returns_false_if_not_found(
     )
 
     updated = update_client(
+        user_ids["worker"],
         999999,
         {"city": "Tampere"}
     )
@@ -1332,6 +1373,7 @@ def test_update_client_returns_false_if_not_found(
 
 def test_update_client_rejects_archived_client(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1353,17 +1395,19 @@ def test_update_client_rejects_archived_client(
         INSERT INTO clients (
             first_name,
             last_name,
-            archived_at
+            archived_at,
+            created_by_user_id
         )
-        VALUES (%s, %s, NOW())
+        VALUES (%s, %s, NOW(), %s)
         RETURNING id
         """,
-        ("Hilma", "Virtanen")
+        ("Hilma", "Virtanen", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     updated = update_client(
+        user_ids["worker"],
         client_id,
         {"city": "Tampere"}
     )
@@ -1373,6 +1417,7 @@ def test_update_client_rejects_archived_client(
 
 def test_update_client_rolls_back_on_error(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1384,7 +1429,7 @@ def test_update_client_rolls_back_on_error(
     def get_test_connection():
         return connect_to_test_postgres(database=database)
 
-    def update_then_fail(cursor, client_id, changes):
+    def update_then_fail(cursor, updated_by_user_id, client_id, changes):
         cursor.execute(
             """
             UPDATE clients
@@ -1408,17 +1453,17 @@ def test_update_client_rolls_back_on_error(
 
     cursor.execute(
         """
-        INSERT INTO clients (first_name, last_name, city)
-        VALUES (%s, %s, %s)
+        INSERT INTO clients (first_name, last_name, city, created_by_user_id)
+        VALUES (%s, %s, %s, %s)
         RETURNING id
         """,
-        ("Hilma", "Virtanen", "Tampere")
+        ("Hilma", "Virtanen", "Tampere", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     with pytest.raises(RuntimeError, match="Simulated update failure"):
-        update_client(client_id, {"city": "Helsinki"})
+        update_client(user_ids["worker"], client_id, {"city": "Helsinki"})
 
     cursor.execute(
         """
@@ -1437,31 +1482,32 @@ def test_update_client_rolls_back_on_error(
 
 def test_archive_client_rejects_invalid_id_type():
     with pytest.raises(ValueError):
-        archive_client("123")
+        archive_client(1, "123")
 
 
 def test_archive_client_rejects_none_id():
     with pytest.raises(ValueError):
-        archive_client(None)
+        archive_client(1, None)
 
 
 def test_archive_client_rejects_boolean_id():
     with pytest.raises(ValueError):
-        archive_client(True)
+        archive_client(1, True)
 
 
 def test_archive_client_rejects_zero_id():
     with pytest.raises(ValueError):
-        archive_client(0)
+        archive_client(1, 0)
 
 
 def test_archive_client_rejects_negative_id():
     with pytest.raises(ValueError):
-        archive_client(-1)
+        archive_client(1, -1)
 
 
 def test_archive_client_sets_archived_at(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1480,16 +1526,16 @@ def test_archive_client_sets_archived_at(
 
     cursor.execute(
         """
-        INSERT INTO clients (first_name, last_name)
-        VALUES (%s, %s)
+        INSERT INTO clients (first_name, last_name, created_by_user_id)
+        VALUES (%s, %s, %s)
         RETURNING id
         """,
-        ("Hilma", "Virtanen")
+        ("Hilma", "Virtanen", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
-    archived = archive_client(client_id)
+    archived = archive_client(user_ids["worker"], client_id)
 
     assert archived is True
 
@@ -1511,6 +1557,7 @@ def test_archive_client_sets_archived_at(
 
 def test_archive_client_returns_false_if_not_found(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1527,13 +1574,14 @@ def test_archive_client_returns_false_if_not_found(
         get_test_connection
     )
 
-    archived = archive_client(999999)
+    archived = archive_client(user_ids["worker"], 999999)
 
     assert archived is False
 
 
 def test_archive_client_returns_false_if_already_archived(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1552,16 +1600,16 @@ def test_archive_client_returns_false_if_already_archived(
 
     cursor.execute(
         """
-        INSERT INTO clients (first_name, last_name)
-        VALUES (%s, %s)
+        INSERT INTO clients (first_name, last_name, created_by_user_id)
+        VALUES (%s, %s, %s)
         RETURNING id
         """,
-        ("Hilma", "Virtanen")
+        ("Hilma", "Virtanen", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
-    first_result = archive_client(client_id)
+    first_result = archive_client(user_ids["worker"], client_id)
 
     cursor.execute(
         """
@@ -1574,7 +1622,7 @@ def test_archive_client_returns_false_if_already_archived(
 
     original_time = cursor.fetchone()[0]
 
-    second_result = archive_client(client_id)
+    second_result = archive_client(user_ids["worker"], client_id)
 
     cursor.execute(
         """
@@ -1594,6 +1642,7 @@ def test_archive_client_returns_false_if_already_archived(
 
 def test_archive_client_rolls_back_on_error(
     postgres_cursor_with_clients,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1605,7 +1654,7 @@ def test_archive_client_rolls_back_on_error(
     def get_test_connection():
         return connect_to_test_postgres(database=database)
 
-    def archive_then_fail(cursor, client_id):
+    def archive_then_fail(cursor, updated_by_user_id, client_id):
         cursor.execute(
             """
             UPDATE clients
@@ -1629,11 +1678,11 @@ def test_archive_client_rolls_back_on_error(
 
     cursor.execute(
         """
-        INSERT INTO clients (first_name, last_name)
-        VALUES (%s, %s)
+        INSERT INTO clients (first_name, last_name, created_by_user_id)
+        VALUES (%s, %s, %s)
         RETURNING id
         """,
-        ("Hilma", "Virtanen")
+        ("Hilma", "Virtanen", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
@@ -1642,7 +1691,7 @@ def test_archive_client_rolls_back_on_error(
         RuntimeError,
         match="Simulated archive failure"
     ):
-        archive_client(client_id)
+        archive_client(user_ids["worker"], client_id)
 
     cursor.execute(
         """
@@ -1662,7 +1711,7 @@ def test_add_client_rejects_invalid_postal_code():
         ValueError,
         match="Postal code must contain only digits"
     ):
-        add_client("Hilma", "Virtanen", postal_code="ABC")
+        add_client(1, "Hilma", "Virtanen", postal_code="ABC")
 
 
 def test_update_client_rejects_invalid_postal_code():
@@ -1670,7 +1719,7 @@ def test_update_client_rejects_invalid_postal_code():
         ValueError,
         match="Postal code must contain only digits"
     ):
-        update_client(1, {"postal_code": "ABC"})
+        update_client(1, 1, {"postal_code": "ABC"})
 
 
 def test_update_client_rejects_unicode_postal_code():
@@ -1678,7 +1727,7 @@ def test_update_client_rejects_unicode_postal_code():
         ValueError,
         match="Postal code must contain only digits"
     ):
-        update_client(1, {"postal_code": "１２３４５"})
+        update_client(1, 1, {"postal_code": "１２３４５"})
 
 
 def test_update_client_rejects_spaces_postal_code():
@@ -1686,4 +1735,99 @@ def test_update_client_rejects_spaces_postal_code():
         ValueError,
         match="Postal code cannot be spaces"
     ):
-        update_client(1, {"postal_code": "   "})
+        update_client(1, 1, {"postal_code": "   "})
+
+
+# USER TRACKING TESTS
+
+
+def test_client_writes_reject_invalid_actor_id():
+    # The user check itself is tested in test_user_validation.py
+    for actor_user_id in (None, True, "1", 0):
+        with pytest.raises(ValueError):
+            add_client(actor_user_id, "Hilma", "Virtanen")
+
+        with pytest.raises(ValueError):
+            update_client(actor_user_id, 1, {"city": "Tampere"})
+
+        with pytest.raises(ValueError):
+            archive_client(actor_user_id, 1)
+
+
+def test_client_saves_creator_and_latest_editor(
+    postgres_cursor_with_clients,
+    user_ids,
+    connect_to_test_postgres,
+    monkeypatch
+):
+    cursor = postgres_cursor_with_clients
+
+    cursor.execute("SELECT current_database()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_postgres(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_postgres_connection",
+        get_test_connection
+    )
+
+    worker_id = user_ids["worker"]
+    admin_id = user_ids["admin"]
+    other_worker_id = user_ids["other_worker"]
+
+    def get_authors(client_id):
+        client = get_client(client_id)
+        return client["created_by_user_id"], client["updated_by_user_id"]
+
+    # The creator is not an owner: another user may change the client,
+    # and the creator stays the same.
+    client_id = add_client(worker_id, "Hilma", "Virtanen")
+    assert get_authors(client_id) == (worker_id, None)
+
+    assert update_client(admin_id, client_id, {"city": "Tampere"}) is True
+    assert get_authors(client_id) == (worker_id, admin_id)
+
+    assert archive_client(other_worker_id, client_id) is True
+    assert get_authors(client_id) == (worker_id, other_worker_id)
+
+
+def test_client_writes_reject_missing_and_inactive_users(
+    postgres_cursor_with_clients,
+    user_ids,
+    connect_to_test_postgres,
+    monkeypatch
+):
+    cursor = postgres_cursor_with_clients
+
+    cursor.execute("SELECT current_database()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_postgres(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_postgres_connection",
+        get_test_connection
+    )
+
+    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen")
+    inactive_id = user_ids["inactive"]
+    missing_id = user_ids["admin"] + user_ids["worker"] + 1000
+
+    with pytest.raises(PermissionError):
+        add_client(inactive_id, "Aino", "Aalto")
+
+    with pytest.raises(ValueError, match="User not found"):
+        update_client(missing_id, client_id, {"city": "Tampere"})
+
+    with pytest.raises(PermissionError):
+        archive_client(inactive_id, client_id)
+
+    # Nothing was saved
+    cursor.execute(
+        "SELECT id, city, archived_at, updated_by_user_id FROM clients"
+    )
+
+    assert cursor.fetchall() == [(client_id, None, None, None)]

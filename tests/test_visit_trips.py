@@ -10,6 +10,11 @@ from carelog.services.visits import (
     add_planned_visit,
     complete_visit,
 )
+from tests.postgres_helpers import (
+    fake_active_user,
+    start_in_thread,
+    wait_until_waiting_for_lock,
+)
 
 
 THREE_LEGS = [
@@ -40,7 +45,7 @@ def block_real_database(monkeypatch):
 
 
 @pytest.fixture
-def trips_database(postgres_cursor_with_visit_trips, connect_to_test_postgres, monkeypatch):
+def trips_database(postgres_cursor_with_visit_trips, user_ids, connect_to_test_postgres, monkeypatch):
     cursor = postgres_cursor_with_visit_trips
 
     cursor.execute("SELECT current_database()")
@@ -63,15 +68,15 @@ def trips_database(postgres_cursor_with_visit_trips, connect_to_test_postgres, m
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Hilma", "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Hilma", "Testi", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
@@ -108,10 +113,10 @@ def get_visit_distance(cursor, visit_id):
 def test_save_and_get_reject_invalid_visit_id():
     for visit_id in ("1", None, True, 0, -1):
         with pytest.raises(ValueError):
-            save_visit_trip(visit_id, THREE_LEGS)
+            save_visit_trip(1, visit_id, THREE_LEGS)
 
         with pytest.raises(ValueError):
-            get_visit_trip(visit_id)
+            get_visit_trip(1, visit_id)
 
 
 def test_save_visit_trip_rejects_invalid_legs_before_database():
@@ -127,57 +132,59 @@ def test_save_visit_trip_rejects_invalid_legs_before_database():
     # that nothing was touched before validation
     for legs in invalid_lists:
         with pytest.raises(ValueError):
-            save_visit_trip(1, legs)
+            save_visit_trip(1, 1, legs)
 
 
 # SAVE VISIT TRIP TESTS
 
 
-def test_save_visit_trip_returns_false_for_missing_visit(trips_database):
-    assert save_visit_trip(999999, THREE_LEGS) is False
+def test_save_visit_trip_returns_false_for_missing_visit(trips_database, user_ids):
+    assert save_visit_trip(user_ids["worker"], 999999, THREE_LEGS) is False
 
 
-def test_save_visit_trip_rejects_cancelled_visit(trips_database):
+def test_save_visit_trip_rejects_cancelled_visit(trips_database, user_ids):
     cursor, client_id, service_id = trips_database
 
     cursor.execute(
         """
-        INSERT INTO visits (client_id, service_id, status, planned_week, distance_km)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO visits (client_id, service_id, status, planned_week, distance_km, user_id, created_by_user_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (client_id, service_id, "cancelled", date(2026, 11, 16), Decimal("5.00"))
+        (client_id, service_id, "cancelled", date(2026, 11, 16), Decimal("5.00"), user_ids["worker"], user_ids["worker"])
     )
 
     visit_id = cursor.fetchone()[0]
 
     with pytest.raises(ValueError, match="cancelled"):
-        save_visit_trip(visit_id, THREE_LEGS)
+        save_visit_trip(user_ids["worker"], visit_id, THREE_LEGS)
 
     assert get_saved_legs(cursor, visit_id) == []
     assert get_visit_distance(cursor, visit_id) == Decimal("5.00")
 
 
-def test_save_visit_trip_for_planned_and_completed_visit(trips_database):
+def test_save_visit_trip_for_planned_and_completed_visit(trips_database, user_ids):
     cursor, client_id, service_id = trips_database
 
     planned_visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_date=date(2026, 11, 18)
     )
 
     completed_visit_id = add_completed_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         completed_date=date(2026, 11, 18)
     )
 
-    assert save_visit_trip(planned_visit_id, THREE_LEGS) is True
+    assert save_visit_trip(user_ids["worker"], planned_visit_id, THREE_LEGS) is True
 
     one_leg = [{"start_location": " Koti ", "destination": " Pankki ", "distance_km": 5}]
 
-    assert save_visit_trip(completed_visit_id, one_leg) is True
+    assert save_visit_trip(user_ids["worker"], completed_visit_id, one_leg) is True
 
     # Positions start from 1 in the order given by the user
     assert get_saved_legs(cursor, planned_visit_id) == [
@@ -203,13 +210,15 @@ def test_save_visit_trip_for_planned_and_completed_visit(trips_database):
     assert cursor.fetchall() == [("planned",), ("completed",)]
 
 
-def test_save_visit_trip_with_unknown_and_zero_distance(trips_database):
+def test_save_visit_trip_with_unknown_and_zero_distance(trips_database, user_ids):
     cursor, client_id, service_id = trips_database
 
     unknown_visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id, service_id, planned_date=date(2026, 11, 18)
     )
     zero_visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id, service_id, planned_date=date(2026, 11, 19)
     )
 
@@ -222,8 +231,8 @@ def test_save_visit_trip_with_unknown_and_zero_distance(trips_database):
         {"start_location": "Koti", "destination": "Naapuri", "distance_km": Decimal("0.00")},
     ]
 
-    save_visit_trip(unknown_visit_id, unknown_legs)
-    save_visit_trip(zero_visit_id, zero_legs)
+    save_visit_trip(user_ids["worker"], unknown_visit_id, unknown_legs)
+    save_visit_trip(user_ids["worker"], zero_visit_id, zero_legs)
 
     # The legs are saved, but the total is unknown, not 3.20
     assert len(get_saved_legs(cursor, unknown_visit_id)) == 2
@@ -233,19 +242,22 @@ def test_save_visit_trip_with_unknown_and_zero_distance(trips_database):
     assert get_visit_distance(cursor, zero_visit_id) == Decimal("0.00")
 
 
-def test_save_visit_trip_replaces_old_legs(trips_database):
+def test_save_visit_trip_replaces_old_legs(trips_database, user_ids):
     cursor, client_id, service_id = trips_database
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id, service_id, planned_date=date(2026, 11, 18)
     )
     other_visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id, service_id, planned_date=date(2026, 11, 19)
     )
 
-    save_visit_trip(other_visit_id, THREE_LEGS)
+    save_visit_trip(user_ids["worker"], other_visit_id, THREE_LEGS)
 
     save_visit_trip(
+        user_ids["worker"],
         visit_id,
         [
             {"start_location": "Koti", "destination": "Kauppa", "distance_km": Decimal("3.00")},
@@ -260,7 +272,7 @@ def test_save_visit_trip_replaces_old_legs(trips_database):
         {"start_location": "Pankki", "destination": "Koti", "distance_km": Decimal("3.70")},
     ]
 
-    save_visit_trip(visit_id, new_legs)
+    save_visit_trip(user_ids["worker"], visit_id, new_legs)
 
     # Only the new list is left, numbered from 1 again
     saved = get_saved_legs(cursor, visit_id)
@@ -275,11 +287,12 @@ def test_save_visit_trip_replaces_old_legs(trips_database):
     assert get_visit_distance(cursor, other_visit_id) == Decimal("8.80")
 
 
-def test_manual_distance_and_completion_keep_kilometres(trips_database):
+def test_manual_distance_and_completion_keep_kilometres(trips_database, user_ids):
     cursor, client_id, service_id = trips_database
 
     # A total distance entered without legs is not changed by anything
     manual_visit_id = add_completed_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         completed_date=date(2026, 11, 18),
@@ -288,14 +301,15 @@ def test_manual_distance_and_completion_keep_kilometres(trips_database):
 
     # Kilometres saved before completion stay after completion
     planned_visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_date=date(2026, 11, 18),
         planned_duration_minutes=60
     )
 
-    save_visit_trip(planned_visit_id, THREE_LEGS)
-    complete_visit(planned_visit_id)
+    save_visit_trip(user_ids["worker"], planned_visit_id, THREE_LEGS)
+    complete_visit(user_ids["worker"], planned_visit_id)
 
     assert get_visit_distance(cursor, manual_visit_id) == Decimal("12.50")
     assert get_saved_legs(cursor, manual_visit_id) == []
@@ -306,15 +320,17 @@ def test_manual_distance_and_completion_keep_kilometres(trips_database):
 
 def test_save_visit_trip_rolls_back_after_deleting_old_legs(
     trips_database,
+    user_ids,
     monkeypatch
 ):
     cursor, client_id, service_id = trips_database
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id, service_id, planned_date=date(2026, 11, 18)
     )
 
-    save_visit_trip(visit_id, THREE_LEGS)
+    save_visit_trip(user_ids["worker"], visit_id, THREE_LEGS)
 
     legs_before = get_saved_legs(cursor, visit_id)
     distance_before = get_visit_distance(cursor, visit_id)
@@ -325,7 +341,7 @@ def test_save_visit_trip_rolls_back_after_deleting_old_legs(
     # first new leg was inserted: position 0 breaks the CHECK constraint.
     calls = []
 
-    def insert_then_fail(cursor, visit_id, position, start, destination, km):
+    def insert_then_fail(cursor, created_by_user_id, visit_id, position, start, destination, km):
         calls.append(position)
 
         if position == 2:
@@ -334,11 +350,12 @@ def test_save_visit_trip_rolls_back_after_deleting_old_legs(
         cursor.execute(
             """
             INSERT INTO visit_trip_legs (
-                visit_id, position, start_location, destination, distance_km
+                visit_id, position, start_location, destination, distance_km,
+                created_by_user_id
             )
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """,
-            (visit_id, position, start, destination, km)
+            (visit_id, position, start, destination, km, created_by_user_id)
         )
 
     monkeypatch.setattr(
@@ -352,7 +369,7 @@ def test_save_visit_trip_rolls_back_after_deleting_old_legs(
     ]
 
     with pytest.raises(psycopg.Error):
-        save_visit_trip(visit_id, new_legs)
+        save_visit_trip(user_ids["worker"], visit_id, new_legs)
 
     # The failure happened inside the transaction
     assert calls == [1, 2]
@@ -363,6 +380,9 @@ def test_save_visit_trip_rolls_back_after_deleting_old_legs(
 
 
 def test_save_visit_trip_closes_connection_on_error(monkeypatch):
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.visit_trips.get_active_user", fake_active_user)
+
 
     class FakeCursor:
         def __init__(self):
@@ -391,7 +411,7 @@ def test_save_visit_trip_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
-    def lock_then_fail(cursor, visit_id):
+    def lock_then_fail(cursor, visit_id, owner_user_id=None):
         raise RuntimeError("Simulated lock failure")
 
     monkeypatch.setattr(
@@ -405,7 +425,7 @@ def test_save_visit_trip_closes_connection_on_error(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Simulated lock failure"):
-        save_visit_trip(1, THREE_LEGS)
+        save_visit_trip(1, 1, THREE_LEGS)
 
     assert connection.rolled_back is True
     assert connection.test_cursor.closed is True
@@ -415,24 +435,28 @@ def test_save_visit_trip_closes_connection_on_error(monkeypatch):
 # GET VISIT TRIP TESTS
 
 
-def test_get_visit_trip_returns_legs_in_order(trips_database):
+def test_get_visit_trip_returns_legs_in_order(trips_database, user_ids):
     cursor, client_id, service_id = trips_database
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id, service_id, planned_date=date(2026, 11, 18)
     )
     empty_visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id, service_id, planned_date=date(2026, 11, 19)
     )
 
-    save_visit_trip(visit_id, THREE_LEGS)
+    save_visit_trip(user_ids["worker"], visit_id, THREE_LEGS)
 
-    legs = get_visit_trip(visit_id)
+    legs = get_visit_trip(user_ids["worker"], visit_id)
 
     assert len(legs) == 3
     assert set(legs[0]) == {
-        "id", "visit_id", "position", "start_location", "destination", "distance_km"
+        "id", "visit_id", "position", "start_location", "destination", "distance_km",
+        "created_by_user_id",
     }
+    assert legs[0]["created_by_user_id"] == user_ids["worker"]
 
     positions = []
 
@@ -445,11 +469,14 @@ def test_get_visit_trip_returns_legs_in_order(trips_database):
     assert legs[1]["distance_km"] == Decimal("1.50")
 
     # A visit without legs and a visit that does not exist
-    assert get_visit_trip(empty_visit_id) == []
-    assert get_visit_trip(999999) == []
+    assert get_visit_trip(user_ids["worker"], empty_visit_id) == []
+    assert get_visit_trip(user_ids["worker"], 999999) == []
 
 
 def test_get_visit_trip_closes_connection_on_error(monkeypatch):
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.visit_trips.get_active_user", fake_active_user)
+
 
     class FakeCursor:
         def __init__(self):
@@ -474,7 +501,7 @@ def test_get_visit_trip_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
-    def select_then_fail(cursor, visit_id):
+    def select_then_fail(cursor, visit_id, owner_user_id=None):
         raise RuntimeError("Simulated select failure")
 
     monkeypatch.setattr(
@@ -488,7 +515,94 @@ def test_get_visit_trip_closes_connection_on_error(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Simulated select failure"):
-        get_visit_trip(1)
+        get_visit_trip(1, 1)
 
     assert connection.test_cursor.closed is True
     assert connection.closed is True
+
+
+# OWNERSHIP TESTS
+# The legs and the kilometres belong to the worker of the visit
+# (visits.user_id). A worker handles only the legs of their own visits.
+
+
+def test_visit_trip_functions_reject_invalid_actor_id():
+    # The user check itself is tested in test_user_validation.py
+    for actor_user_id in (None, True, "1", 0):
+        with pytest.raises(ValueError):
+            save_visit_trip(actor_user_id, 1, THREE_LEGS)
+
+        with pytest.raises(ValueError):
+            get_visit_trip(actor_user_id, 1)
+
+
+def test_visit_trip_access_follows_the_worker_of_the_visit(trips_database, user_ids):
+    cursor, client_id, service_id = trips_database
+    worker_id = user_ids["worker"]
+    other_worker_id = user_ids["other_worker"]
+    admin_id = user_ids["admin"]
+
+    other_visit_id = add_planned_visit(
+        other_worker_id, client_id, service_id, planned_date=date(2026, 11, 25)
+    )
+
+    # Another worker's visit looks like a missing visit
+    assert save_visit_trip(worker_id, other_visit_id, THREE_LEGS) is False
+    assert get_saved_legs(cursor, other_visit_id) == []
+
+    # An admin saves the legs. The kilometres stay with the worker of the
+    # visit, and the admin is the creator of the legs and the latest
+    # editor of the visit.
+    assert save_visit_trip(admin_id, other_visit_id, THREE_LEGS) is True
+
+    cursor.execute(
+        "SELECT user_id, updated_by_user_id, distance_km FROM visits WHERE id = %s",
+        (other_visit_id,)
+    )
+    assert cursor.fetchone() == (other_worker_id, admin_id, Decimal("8.80"))
+
+    assert get_visit_trip(worker_id, other_visit_id) == []
+    assert len(get_visit_trip(other_worker_id, other_visit_id)) == 3
+
+    legs = get_visit_trip(admin_id, other_visit_id)
+    assert legs[0]["created_by_user_id"] == admin_id
+
+
+def test_visit_trip_save_waits_for_worker_change(trips_database, user_ids, connect_to_test_postgres):
+    cursor, client_id, service_id = trips_database
+
+    visit_id = add_planned_visit(
+        user_ids["worker"], client_id, service_id, planned_date=date(2026, 11, 25)
+    )
+
+    cursor.execute("SELECT current_database()")
+    database = cursor.fetchone()[0]
+
+    # The other connection gives the visit to another worker but does not
+    # commit yet, so it keeps the visit row locked.
+    other_connection = connect_to_test_postgres(database=database)
+
+    try:
+        other_connection.execute(
+            "UPDATE visits SET user_id = %s WHERE id = %s",
+            (user_ids["other_worker"], visit_id)
+        )
+
+        thread, done, outcome = start_in_thread(
+            save_visit_trip, user_ids["worker"], visit_id, THREE_LEGS
+        )
+
+        wait_until_waiting_for_lock(cursor)
+        assert not done.is_set()
+
+        other_connection.commit()
+
+        assert done.wait(timeout=10)
+        thread.join(timeout=10)
+
+    finally:
+        other_connection.close()
+
+    # The visit is no longer the worker's, so nothing is saved
+    assert outcome == {"result": False}
+    assert get_saved_legs(cursor, visit_id) == []

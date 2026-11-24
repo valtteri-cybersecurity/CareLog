@@ -1,5 +1,7 @@
 import re
 
+from psycopg import pq
+
 from carelog.database.postgres_connection import get_postgres_connection
 from carelog.database.postgres_migrations import (
     v001_users,
@@ -15,6 +17,7 @@ from carelog.database.postgres_migrations import (
     v011_visit_trip_legs,
     v012_foreign_key_indexes,
     v013_visit_note_history,
+    v014_user_tracking,
 )
 
 
@@ -34,6 +37,7 @@ MIGRATIONS = [
     (11, "visit_trip_legs", v011_visit_trip_legs.upgrade),
     (12, None, v012_foreign_key_indexes.upgrade),
     (13, "visit_note_history", v013_visit_note_history.upgrade),
+    (14, None, v014_user_tracking.upgrade),
 ]
 
 
@@ -146,6 +150,48 @@ EXPECTED_V013_COLUMNS = [
     ("updated_at", "timestamp without time zone", "NO", UTC_NOW),
 ]
 
+# Columns added to the end of existing tables by migration v014.
+# Keep these definitions consistent with v014_user_tracking.py.
+EXPECTED_V014_COLUMNS = {
+    "clients": [
+        ("created_by_user_id", "integer", "NO", None),
+        ("updated_by_user_id", "integer", "YES", None),
+    ],
+    "services": [
+        ("created_by_user_id", "integer", "NO", None),
+        ("updated_by_user_id", "integer", "YES", None),
+        ("updated_at", "timestamp without time zone", "NO", UTC_NOW),
+    ],
+    "trips": [
+        ("created_by_user_id", "integer", "NO", None),
+        ("updated_by_user_id", "integer", "YES", None),
+        ("updated_at", "timestamp without time zone", "NO", UTC_NOW),
+    ],
+    "visits": [
+        ("user_id", "integer", "NO", None),
+        ("created_by_user_id", "integer", "NO", None),
+        ("updated_by_user_id", "integer", "YES", None),
+    ],
+    "visit_notes": [
+        ("created_by_user_id", "integer", "NO", None),
+        ("updated_by_user_id", "integer", "YES", None),
+    ],
+    "expenses": [
+        ("user_id", "integer", "NO", None),
+        ("created_by_user_id", "integer", "NO", None),
+        ("updated_by_user_id", "integer", "YES", None),
+        ("updated_at", "timestamp without time zone", "NO", UTC_NOW),
+    ],
+    "visit_trip_legs": [
+        ("created_by_user_id", "integer", "NO", None),
+    ],
+}
+
+# Existing columns that migration v014 makes NOT NULL.
+EXPECTED_V014_NOT_NULL_COLUMNS = {
+    "visit_note_history": ["edited_by_user_id"],
+}
+
 
 # Indexes other than the primary key: version that creates the index,
 # index name, unique, and its key columns as PostgreSQL shows them.
@@ -159,12 +205,14 @@ EXPECTED_INDEXES = {
     ],
     "visits": [
         (12, "idx_visits_client_id", False, ["client_id"]),
+        (14, "idx_visits_user_id", False, ["user_id"]),
     ],
     "visit_notes": [
         (12, "idx_visit_notes_visit_id", False, ["visit_id"]),
     ],
     "expenses": [
         (12, "idx_expenses_visit_id", False, ["visit_id"]),
+        (14, "idx_expenses_user_id", False, ["user_id"]),
     ],
     "visit_trip_legs": [
         (11, "uq_trip_legs_visit_position", True, ["visit_id", "\"position\""]),
@@ -175,27 +223,50 @@ EXPECTED_INDEXES = {
 }
 
 
-# Foreign keys: column, referenced table, referenced column, DELETE, UPDATE.
+# A foreign key from a column to users.id, created by migration v014.
+USER_REFERENCE = ("users", "id", "RESTRICT", "RESTRICT")
+
+# Foreign keys: version that creates the foreign key, column, referenced
+# table, referenced column, DELETE, UPDATE.
 EXPECTED_FOREIGN_KEYS = {
+    "clients": [
+        (14, "created_by_user_id") + USER_REFERENCE,
+        (14, "updated_by_user_id") + USER_REFERENCE,
+    ],
+    "services": [
+        (14, "created_by_user_id") + USER_REFERENCE,
+        (14, "updated_by_user_id") + USER_REFERENCE,
+    ],
     "trips": [
-        ("client_id", "clients", "id", "CASCADE", "RESTRICT"),
+        (4, "client_id", "clients", "id", "CASCADE", "RESTRICT"),
+        (14, "created_by_user_id") + USER_REFERENCE,
+        (14, "updated_by_user_id") + USER_REFERENCE,
     ],
     "visits": [
-        ("client_id", "clients", "id", "RESTRICT", "RESTRICT"),
-        ("service_id", "services", "id", "RESTRICT", "RESTRICT"),
+        (5, "client_id", "clients", "id", "RESTRICT", "RESTRICT"),
+        (5, "service_id", "services", "id", "RESTRICT", "RESTRICT"),
+        (14, "user_id") + USER_REFERENCE,
+        (14, "created_by_user_id") + USER_REFERENCE,
+        (14, "updated_by_user_id") + USER_REFERENCE,
     ],
     "visit_notes": [
-        ("visit_id", "visits", "id", "RESTRICT", "RESTRICT"),
+        (6, "visit_id", "visits", "id", "RESTRICT", "RESTRICT"),
+        (14, "created_by_user_id") + USER_REFERENCE,
+        (14, "updated_by_user_id") + USER_REFERENCE,
     ],
     "expenses": [
-        ("visit_id", "visits", "id", "RESTRICT", "RESTRICT"),
+        (7, "visit_id", "visits", "id", "RESTRICT", "RESTRICT"),
+        (14, "user_id") + USER_REFERENCE,
+        (14, "created_by_user_id") + USER_REFERENCE,
+        (14, "updated_by_user_id") + USER_REFERENCE,
     ],
     "visit_trip_legs": [
-        ("visit_id", "visits", "id", "RESTRICT", "RESTRICT"),
+        (11, "visit_id", "visits", "id", "RESTRICT", "RESTRICT"),
+        (14, "created_by_user_id") + USER_REFERENCE,
     ],
     "visit_note_history": [
-        ("edited_by_user_id", "users", "id", "RESTRICT", "RESTRICT"),
-        ("note_id", "visit_notes", "id", "RESTRICT", "RESTRICT"),
+        (13, "edited_by_user_id") + USER_REFERENCE,
+        (13, "note_id", "visit_notes", "id", "RESTRICT", "RESTRICT"),
     ],
 }
 
@@ -212,8 +283,30 @@ FOREIGN_KEY_RULES = {
 
 
 # Tables whose updated_at is kept current by the trigger
-# trg_<table>_updated_at, which calls set_updated_at().
-UPDATED_AT_TABLES = ("users", "clients", "visits")
+# trg_<table>_updated_at, which calls set_updated_at(), and the version
+# that creates the trigger.
+UPDATED_AT_TABLES = {
+    "users": 1,
+    "clients": 2,
+    "visits": 5,
+    "services": 14,
+    "trips": 14,
+    "expenses": 14,
+}
+
+# Tables whose created_by_user_id is kept unchanged by the trigger
+# trg_<table>_created_by of migration v014, and its function. Keep these
+# consistent with v014_user_tracking.py.
+CREATED_BY_TABLES = (
+    "clients",
+    "services",
+    "trips",
+    "visits",
+    "visit_notes",
+    "expenses",
+    "visit_trip_legs",
+)
+CREATED_BY_FUNCTION = "prevent_created_by_change"
 
 # pg_trigger.tgtype of a BEFORE UPDATE FOR EACH ROW trigger:
 # 1 (FOR EACH ROW) + 2 (BEFORE) + 16 (UPDATE).
@@ -372,11 +465,30 @@ def validate_table(cursor, table, applied_versions):
 
     expected_columns = EXPECTED_COLUMNS[table]
 
+    # Later migrations add columns to the end of the table, in the order
+    # of the migrations.
     if table == "visits" and 9 in applied_versions:
-        expected_columns = EXPECTED_COLUMNS["visits"] + EXPECTED_V009_COLUMNS
+        expected_columns = expected_columns + EXPECTED_V009_COLUMNS
 
     if table == "visit_notes" and 13 in applied_versions:
-        expected_columns = EXPECTED_COLUMNS["visit_notes"] + EXPECTED_V013_COLUMNS
+        expected_columns = expected_columns + EXPECTED_V013_COLUMNS
+
+    if 14 in applied_versions:
+
+        if table in EXPECTED_V014_COLUMNS:
+            expected_columns = expected_columns + EXPECTED_V014_COLUMNS[table]
+
+        # Existing columns that v014 makes NOT NULL
+        if table in EXPECTED_V014_NOT_NULL_COLUMNS:
+            changed_columns = []
+
+            for name, column_type, nullable, default in expected_columns:
+                if name in EXPECTED_V014_NOT_NULL_COLUMNS[table]:
+                    nullable = "NO"
+
+                changed_columns.append((name, column_type, nullable, default))
+
+            expected_columns = changed_columns
 
     if columns != expected_columns:
         raise RuntimeError(f"Invalid columns in table: {table}")
@@ -497,7 +609,19 @@ def validate_table(cursor, table, applied_versions):
 
         foreign_keys.append(foreign_key)
 
-    expected_foreign_keys = EXPECTED_FOREIGN_KEYS.get(table, [])
+    # Only the foreign keys of applied migrations, sorted by the column
+    # name like the query above.
+    expected_foreign_keys = []
+
+    for version, column, reference_table, reference_column, delete_rule, update_rule in (
+        EXPECTED_FOREIGN_KEYS.get(table, [])
+    ):
+        if version in applied_versions:
+            expected_foreign_keys.append(
+                (column, reference_table, reference_column, delete_rule, update_rule)
+            )
+
+    expected_foreign_keys.sort()
 
     if foreign_keys != expected_foreign_keys:
         raise RuntimeError(f"Invalid foreign keys in table: {table}")
@@ -518,7 +642,7 @@ def validate_table(cursor, table, applied_versions):
     triggers = cursor.fetchall()
     expected_triggers = []
 
-    if table in UPDATED_AT_TABLES:
+    if table in UPDATED_AT_TABLES and UPDATED_AT_TABLES[table] in applied_versions:
         expected_triggers.append(
             (
                 f"trg_{table}_updated_at",
@@ -537,6 +661,19 @@ def validate_table(cursor, table, applied_versions):
                 "O",
             )
         )
+
+    if table in CREATED_BY_TABLES and 14 in applied_versions:
+        expected_triggers.append(
+            (
+                f"trg_{table}_created_by",
+                CREATED_BY_FUNCTION,
+                BEFORE_UPDATE_ROW_TRIGGER,
+                "O",
+            )
+        )
+
+    # Sorted by the trigger name like the query above
+    expected_triggers.sort()
 
     if triggers != expected_triggers:
         raise RuntimeError(f"Invalid triggers in table: {table}")
@@ -582,6 +719,30 @@ def validate_note_history_function(cursor):
 
     if not has_acl or others_can_execute:
         raise RuntimeError(f"Invalid function privileges: {NOTE_HISTORY_FUNCTION}")
+
+
+def validate_created_by_function(cursor):
+    # The owner of the function of the created_by triggers (v014) must be
+    # the owner of the tables, so no other account can replace it with a
+    # function that lets created_by_user_id change.
+    cursor.execute("""
+        SELECT p.proowner = r.relowner
+        FROM pg_proc AS p
+        JOIN pg_class AS r
+          ON r.oid = 'clients'::regclass
+        WHERE p.pronamespace = current_schema()::regnamespace
+          AND p.proname = %s
+    """, (CREATED_BY_FUNCTION,))
+
+    rows = cursor.fetchall()
+
+    if len(rows) != 1:
+        raise RuntimeError(f"Invalid function: {CREATED_BY_FUNCTION}")
+
+    owner_matches = rows[0][0]
+
+    if not owner_matches:
+        raise RuntimeError(f"Invalid function owner: {CREATED_BY_FUNCTION}")
 
 
 def validate_business_constraints(cursor, applied_versions):
@@ -638,23 +799,36 @@ def validate_schema(cursor, applied_versions):
     if 13 in applied_versions:
         validate_note_history_function(cursor)
 
+    if 14 in applied_versions:
+        validate_created_by_function(cursor)
+
     validate_business_constraints(cursor, applied_versions)
 
 
-def run_postgres_migrations(database=None, *, password):
-    if not password:
-        raise ValueError("A password for carelog_migrator is required")
+def apply_migrations(connection):
+    # Runs the pending migrations on an open connection. Both
+    # run_postgres_migrations() and the test fixtures use this function,
+    # so the migrations always run the same way.
+    #
+    # The caller owns the connection and closes it. This function owns
+    # its cursor and the transactions: every migration, its version
+    # record and the schema check are committed together, and a failed
+    # migration is rolled back. Migrations committed before it stay.
 
-    connection = None
+    # A migration needs its own transaction, for example for LOCK TABLE
+    # in v014, so autocommit must be off.
+    if connection.autocommit:
+        raise RuntimeError("Migrations need a connection with autocommit off")
+
+    # An open transaction of the caller would be committed or rolled back
+    # together with the migrations, so it is not allowed. Nothing is
+    # changed before these checks.
+    if connection.info.transaction_status != pq.TransactionStatus.IDLE:
+        raise RuntimeError("Migrations need a connection without an open transaction")
+
     cursor = None
 
     try:
-        connection = get_postgres_connection(
-            database=database,
-            user="carelog_migrator",
-            password=password,
-        )
-
         cursor = connection.cursor()
         check_schema(cursor)
         create_migrations_table(cursor)
@@ -713,21 +887,39 @@ def run_postgres_migrations(database=None, *, password):
             validate_schema(cursor, applied_versions)
             connection.commit()
 
-    except Exception as error:
-        print(f"Migration error: {error}")
-
-        if connection is not None:
-            connection.rollback()
-
+    except Exception:
+        connection.rollback()
         raise
 
     finally:
         if cursor is not None:
             cursor.close()
 
+
+def run_postgres_migrations(database=None, *, password):
+    if not password:
+        raise ValueError("A password for carelog_migrator is required")
+
+    connection = None
+
+    try:
+        # A new connection has autocommit off and no open transaction
+        connection = get_postgres_connection(
+            database=database,
+            user="carelog_migrator",
+            password=password,
+        )
+
+        apply_migrations(connection)
+
+    except Exception as error:
+        print(f"Migration error: {error}")
+        raise
+
+    finally:
         if connection is not None:
             connection.close()
 
 
 if __name__ == "__main__":
-    raise SystemExit("Run database migrations through install.sh --postgres")
+    raise SystemExit("Run database migrations through: bash install.sh")

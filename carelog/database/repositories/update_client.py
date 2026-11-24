@@ -15,6 +15,7 @@ ALLOWED_FIELDS = {
 
 def update_client_record(
     cursor: Cursor,
+    updated_by_user_id: int,
     client_id: int,
     changes: dict
 ) -> bool:
@@ -48,6 +49,11 @@ def update_client_record(
 
     if not updates:
         raise ValueError("No fields to update")
+
+    # The latest editor is not one of ALLOWED_FIELDS: it always comes
+    # from the user who performs the update.
+    updates.append("updated_by_user_id = %s")
+    values.append(updated_by_user_id)
 
     sql = "UPDATE clients SET "
     sql += ", ".join(updates)

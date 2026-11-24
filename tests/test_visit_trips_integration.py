@@ -4,7 +4,6 @@ from decimal import Decimal
 import psycopg
 import pytest
 
-from carelog.database.postgres_migrations import v004_trips
 from carelog.services.trips import (
     add_trip,
     delete_trip,
@@ -52,11 +51,8 @@ def block_real_database(monkeypatch):
 
 
 @pytest.fixture
-def integration_database(postgres_cursor_with_visit_trips, connect_to_test_postgres, monkeypatch):
+def integration_database(postgres_cursor_with_visit_trips, user_ids, connect_to_test_postgres, monkeypatch):
     cursor = postgres_cursor_with_visit_trips
-
-    # The saved trips table is needed here as well
-    v004_trips.upgrade(cursor)
 
     cursor.execute("SELECT current_database()")
     database = cursor.fetchone()[0]
@@ -73,19 +69,20 @@ def integration_database(postgres_cursor_with_visit_trips, connect_to_test_postg
     return cursor
 
 
-def create_client(cursor, first_name):
+def create_client(cursor, user_id, first_name):
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        (first_name, "Testi")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) "
+        "VALUES (%s, %s, %s) RETURNING id",
+        (first_name, "Testi", user_id)
     )
 
     return cursor.fetchone()[0]
 
 
-def create_service(cursor):
+def create_service(cursor, user_id):
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kauppa-asiointi",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kauppa-asiointi", user_id)
     )
 
     return cursor.fetchone()[0]
@@ -105,23 +102,25 @@ def get_saved_legs(cursor, visit_id):
     return cursor.fetchall()
 
 
-def test_default_route_is_copied_into_visit(integration_database):
+def test_default_route_is_copied_into_visit(integration_database, user_ids):
     cursor = integration_database
-    client_id = create_client(cursor, "Hilma")
-    service_id = create_service(cursor)
+    actor_id = user_ids["worker"]
+    client_id = create_client(cursor, user_ids["admin"], "Hilma")
+    service_id = create_service(cursor, user_ids["admin"])
 
-    trip_id = add_trip(client_id, "Hilman koti", "Ruokakauppa", Decimal("3.20"))
+    trip_id = add_trip(actor_id, client_id, "Hilman koti", "Ruokakauppa", Decimal("3.20"))
     trip = get_trip(trip_id)
 
     leg = leg_from_trip(trip)
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id, service_id, planned_date=date(2026, 11, 25)
     )
 
-    assert save_visit_trip(visit_id, [leg]) is True
+    assert save_visit_trip(user_ids["worker"], visit_id, [leg]) is True
 
-    legs = get_visit_trip(visit_id)
+    legs = get_visit_trip(user_ids["worker"], visit_id)
 
     assert len(legs) == 1
     assert legs[0]["visit_id"] == visit_id
@@ -130,7 +129,7 @@ def test_default_route_is_copied_into_visit(integration_database):
     assert legs[0]["distance_km"] == Decimal("3.20")
     assert isinstance(legs[0]["distance_km"], Decimal)
 
-    assert get_visit(visit_id)["distance_km"] == Decimal("3.20")
+    assert get_visit(user_ids["worker"], visit_id)["distance_km"] == Decimal("3.20")
 
     # The saved trip itself is not changed
     assert get_trip(trip_id) == trip
@@ -145,42 +144,45 @@ def test_default_route_is_copied_into_visit(integration_database):
     assert "client_id" not in column_names
 
 
-def test_changing_or_deleting_default_route_keeps_history(integration_database):
+def test_changing_or_deleting_default_route_keeps_history(integration_database, user_ids):
     cursor = integration_database
-    client_id = create_client(cursor, "Hilma")
-    service_id = create_service(cursor)
+    actor_id = user_ids["worker"]
+    client_id = create_client(cursor, user_ids["admin"], "Hilma")
+    service_id = create_service(cursor, user_ids["admin"])
 
-    trip_id = add_trip(client_id, "Hilman koti", "Ruokakauppa", Decimal("3.20"))
+    trip_id = add_trip(actor_id, client_id, "Hilman koti", "Ruokakauppa", Decimal("3.20"))
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id, service_id, planned_date=date(2026, 11, 25)
     )
 
-    save_visit_trip(visit_id, [leg_from_trip(get_trip(trip_id))])
+    save_visit_trip(user_ids["worker"], visit_id, [leg_from_trip(get_trip(trip_id))])
 
     # The saved route gets longer later
-    update_trip(trip_id, {"distance_km": Decimal("4.50")})
+    update_trip(actor_id, trip_id, {"distance_km": Decimal("4.50")})
 
     assert get_trip(trip_id)["distance_km"] == Decimal("4.50")
-    assert get_visit_trip(visit_id)[0]["distance_km"] == Decimal("3.20")
-    assert get_visit(visit_id)["distance_km"] == Decimal("3.20")
+    assert get_visit_trip(user_ids["worker"], visit_id)[0]["distance_km"] == Decimal("3.20")
+    assert get_visit(user_ids["worker"], visit_id)["distance_km"] == Decimal("3.20")
 
     # The saved route is deleted; the visit's history stays
-    assert delete_trip(trip_id) is True
+    assert delete_trip(actor_id, trip_id) is True
 
     assert get_trip(trip_id) is None
     assert get_saved_legs(cursor, visit_id) == [
         (1, "Hilman koti", "Ruokakauppa", Decimal("3.20")),
     ]
-    assert get_visit(visit_id)["distance_km"] == Decimal("3.20")
+    assert get_visit(user_ids["worker"], visit_id)["distance_km"] == Decimal("3.20")
 
 
-def test_multi_stop_trip_on_planned_visit(integration_database):
+def test_multi_stop_trip_on_planned_visit(integration_database, user_ids):
     cursor = integration_database
-    client_id = create_client(cursor, "Hilma")
-    service_id = create_service(cursor)
+    client_id = create_client(cursor, user_ids["admin"], "Hilma")
+    service_id = create_service(cursor, user_ids["admin"])
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_date=date(2026, 11, 25),
@@ -189,11 +191,11 @@ def test_multi_stop_trip_on_planned_visit(integration_database):
         description="Ruokaostokset"
     )
 
-    visit_before = get_visit(visit_id)
+    visit_before = get_visit(user_ids["worker"], visit_id)
 
-    assert save_visit_trip(visit_id, THREE_LEGS) is True
+    assert save_visit_trip(user_ids["worker"], visit_id, THREE_LEGS) is True
 
-    legs = get_visit_trip(visit_id)
+    legs = get_visit_trip(user_ids["worker"], visit_id)
 
     positions = []
 
@@ -205,7 +207,7 @@ def test_multi_stop_trip_on_planned_visit(integration_database):
     assert legs[1]["distance_km"] == Decimal("1.50")
     assert legs[2]["destination"] == "Koti"
 
-    visit_after = get_visit(visit_id)
+    visit_after = get_visit(user_ids["worker"], visit_id)
 
     assert visit_after["distance_km"] == Decimal("8.80")
 
@@ -230,79 +232,84 @@ def test_multi_stop_trip_on_planned_visit(integration_database):
         assert visit_after[field] == visit_before[field]
 
 
-def test_completing_visit_keeps_trip(integration_database):
+def test_completing_visit_keeps_trip(integration_database, user_ids):
     cursor = integration_database
-    client_id = create_client(cursor, "Hilma")
-    service_id = create_service(cursor)
+    client_id = create_client(cursor, user_ids["admin"], "Hilma")
+    service_id = create_service(cursor, user_ids["admin"])
 
     # A past day, so the completion date is allowed
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_date=date(2026, 11, 18),
         planned_duration_minutes=60
     )
 
-    save_visit_trip(visit_id, THREE_LEGS)
+    save_visit_trip(user_ids["worker"], visit_id, THREE_LEGS)
 
-    assert get_visit(visit_id)["distance_km"] == Decimal("8.80")
+    assert get_visit(user_ids["worker"], visit_id)["distance_km"] == Decimal("8.80")
 
-    assert complete_visit(visit_id) is True
+    assert complete_visit(user_ids["worker"], visit_id) is True
 
-    visit = get_visit(visit_id)
+    visit = get_visit(user_ids["worker"], visit_id)
 
     assert visit["status"] == "completed"
     assert visit["completed_date"] == date(2026, 11, 18)
 
     # complete_visit() does not clear the kilometres or the legs
     assert visit["distance_km"] == Decimal("8.80")
-    assert len(get_visit_trip(visit_id)) == 3
+    assert len(get_visit_trip(user_ids["worker"], visit_id)) == 3
 
     # The planned duration is used as the actual one, as before
     assert visit["planned_duration_minutes"] == 60
     assert visit["duration_minutes"] == 60
 
 
-def test_trip_added_after_completion(integration_database):
+def test_trip_added_after_completion(integration_database, user_ids):
     cursor = integration_database
-    client_id = create_client(cursor, "Hilma")
-    service_id = create_service(cursor)
+    client_id = create_client(cursor, user_ids["admin"], "Hilma")
+    service_id = create_service(cursor, user_ids["admin"])
 
     # The kilometres are added at the end of the day
     visit_id = add_completed_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         completed_date=date(2026, 11, 18),
         duration_minutes=90
     )
 
-    assert get_visit(visit_id)["distance_km"] is None
+    assert get_visit(user_ids["worker"], visit_id)["distance_km"] is None
 
-    assert save_visit_trip(visit_id, THREE_LEGS) is True
+    assert save_visit_trip(user_ids["worker"], visit_id, THREE_LEGS) is True
 
-    visit = get_visit(visit_id)
+    visit = get_visit(user_ids["worker"], visit_id)
 
     assert visit["status"] == "completed"
     assert visit["completed_date"] == date(2026, 11, 18)
     assert visit["duration_minutes"] == 90
     assert visit["distance_km"] == Decimal("8.80")
-    assert len(get_visit_trip(visit_id)) == 3
+    assert len(get_visit_trip(user_ids["worker"], visit_id)) == 3
 
 
-def test_replacing_trip_does_not_touch_other_clients(integration_database):
+def test_replacing_trip_does_not_touch_other_clients(integration_database, user_ids):
     cursor = integration_database
-    hilma_id = create_client(cursor, "Hilma")
-    aino_id = create_client(cursor, "Aino")
-    service_id = create_service(cursor)
+    hilma_id = create_client(cursor, user_ids["admin"], "Hilma")
+    aino_id = create_client(cursor, user_ids["admin"], "Aino")
+    service_id = create_service(cursor, user_ids["admin"])
 
     hilma_visit_id = add_planned_visit(
+        user_ids["worker"],
         hilma_id, service_id, planned_date=date(2026, 11, 25)
     )
     aino_visit_id = add_planned_visit(
+        user_ids["worker"],
         aino_id, service_id, planned_date=date(2026, 11, 25)
     )
 
     save_visit_trip(
+        user_ids["worker"],
         hilma_visit_id,
         [
             {"start_location": "Koti", "destination": "Kauppa", "distance_km": 3},
@@ -311,14 +318,16 @@ def test_replacing_trip_does_not_touch_other_clients(integration_database):
     )
 
     save_visit_trip(
+        user_ids["worker"],
         aino_visit_id,
         [{"start_location": "Ainon koti", "destination": "Pankki", "distance_km": 5}]
     )
 
-    assert get_visit(hilma_visit_id)["distance_km"] == Decimal("6")
+    assert get_visit(user_ids["worker"], hilma_visit_id)["distance_km"] == Decimal("6")
 
     # Hilma's trip is replaced with a longer one
     save_visit_trip(
+        user_ids["worker"],
         hilma_visit_id,
         [
             {"start_location": "Koti", "destination": "Kauppa", "distance_km": 3},
@@ -333,22 +342,23 @@ def test_replacing_trip_does_not_touch_other_clients(integration_database):
         (2, "Kauppa", "Apteekki", Decimal("2.00")),
         (3, "Apteekki", "Koti", Decimal("4.00")),
     ]
-    assert get_visit(hilma_visit_id)["distance_km"] == Decimal("9")
+    assert get_visit(user_ids["worker"], hilma_visit_id)["distance_km"] == Decimal("9")
 
     # Aino's visit is not touched
-    aino_legs = get_visit_trip(aino_visit_id)
+    aino_legs = get_visit_trip(user_ids["worker"], aino_visit_id)
 
     assert len(aino_legs) == 1
     assert aino_legs[0]["start_location"] == "Ainon koti"
-    assert get_visit(aino_visit_id)["distance_km"] == Decimal("5")
+    assert get_visit(user_ids["worker"], aino_visit_id)["distance_km"] == Decimal("5")
 
 
-def test_unknown_distance_is_completed_later(integration_database):
+def test_unknown_distance_is_completed_later(integration_database, user_ids):
     cursor = integration_database
-    client_id = create_client(cursor, "Hilma")
-    service_id = create_service(cursor)
+    client_id = create_client(cursor, user_ids["admin"], "Hilma")
+    service_id = create_service(cursor, user_ids["admin"])
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id, service_id, planned_date=date(2026, 11, 25)
     )
 
@@ -358,7 +368,7 @@ def test_unknown_distance_is_completed_later(integration_database):
         {"start_location": "Apteekki", "destination": "Koti", "distance_km": Decimal("4.10")},
     ]
 
-    save_visit_trip(visit_id, legs_with_gap)
+    save_visit_trip(user_ids["worker"], visit_id, legs_with_gap)
 
     # All legs are saved, the gap stays NULL and no partial total is saved
     assert get_saved_legs(cursor, visit_id) == [
@@ -366,32 +376,35 @@ def test_unknown_distance_is_completed_later(integration_database):
         (2, "Kauppa", "Apteekki", None),
         (3, "Apteekki", "Koti", Decimal("4.10")),
     ]
-    assert get_visit(visit_id)["distance_km"] is None
+    assert get_visit(user_ids["worker"], visit_id)["distance_km"] is None
 
     # The missing distance is filled in later
-    save_visit_trip(visit_id, THREE_LEGS)
+    save_visit_trip(user_ids["worker"], visit_id, THREE_LEGS)
 
-    assert get_visit(visit_id)["distance_km"] == Decimal("8.80")
+    assert get_visit(user_ids["worker"], visit_id)["distance_km"] == Decimal("8.80")
 
     # A known zero is not the same as an unknown distance
     zero_visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id, service_id, planned_date=date(2026, 11, 26)
     )
 
     save_visit_trip(
+        user_ids["worker"],
         zero_visit_id,
         [{"start_location": "Koti", "destination": "Naapuri", "distance_km": Decimal("0.00")}]
     )
 
-    assert get_visit(zero_visit_id)["distance_km"] == Decimal("0.00")
+    assert get_visit(user_ids["worker"], zero_visit_id)["distance_km"] == Decimal("0.00")
 
 
-def test_manual_distance_is_kept_without_legs(integration_database):
+def test_manual_distance_is_kept_without_legs(integration_database, user_ids):
     cursor = integration_database
-    client_id = create_client(cursor, "Hilma")
-    service_id = create_service(cursor)
+    client_id = create_client(cursor, user_ids["admin"], "Hilma")
+    service_id = create_service(cursor, user_ids["admin"])
 
     manual_visit_id = add_completed_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         completed_date=date(2026, 11, 18),
@@ -400,72 +413,77 @@ def test_manual_distance_is_kept_without_legs(integration_database):
 
     # Another visit gets a trip; the manual one must not change
     other_visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id, service_id, planned_date=date(2026, 11, 25)
     )
 
-    save_visit_trip(other_visit_id, THREE_LEGS)
+    save_visit_trip(user_ids["worker"], other_visit_id, THREE_LEGS)
 
-    assert get_visit_trip(manual_visit_id) == []
-    assert get_visit(manual_visit_id)["distance_km"] == Decimal("12.50")
+    assert get_visit_trip(user_ids["worker"], manual_visit_id) == []
+    assert get_visit(user_ids["worker"], manual_visit_id)["distance_km"] == Decimal("12.50")
 
 
-def test_cancelled_visit_keeps_trip_history(integration_database):
+def test_cancelled_visit_keeps_trip_history(integration_database, user_ids):
     cursor = integration_database
-    client_id = create_client(cursor, "Hilma")
-    service_id = create_service(cursor)
+    client_id = create_client(cursor, user_ids["admin"], "Hilma")
+    service_id = create_service(cursor, user_ids["admin"])
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id, service_id, planned_date=date(2026, 11, 25)
     )
 
-    save_visit_trip(visit_id, THREE_LEGS)
-    legs_before = get_visit_trip(visit_id)
+    save_visit_trip(user_ids["worker"], visit_id, THREE_LEGS)
+    legs_before = get_visit_trip(user_ids["worker"], visit_id)
 
-    cancel_visit(visit_id)
+    cancel_visit(user_ids["worker"], visit_id)
 
-    visit = get_visit(visit_id)
+    visit = get_visit(user_ids["worker"], visit_id)
 
     # The history stays after cancelling
     assert visit["status"] == "cancelled"
     assert visit["distance_km"] == Decimal("8.80")
-    assert get_visit_trip(visit_id) == legs_before
+    assert get_visit_trip(user_ids["worker"], visit_id) == legs_before
 
     # A cancelled visit cannot get a new trip
     with pytest.raises(ValueError, match="cancelled"):
         save_visit_trip(
+            user_ids["worker"],
             visit_id,
             [{"start_location": "Koti", "destination": "Kauppa", "distance_km": 1}]
         )
 
-    assert get_visit_trip(visit_id) == legs_before
-    assert get_visit(visit_id)["distance_km"] == Decimal("8.80")
+    assert get_visit_trip(user_ids["worker"], visit_id) == legs_before
+    assert get_visit(user_ids["worker"], visit_id)["distance_km"] == Decimal("8.80")
 
 
 def test_failure_after_all_legs_rolls_back_everything(
     integration_database,
+    user_ids,
     monkeypatch
 ):
     cursor = integration_database
-    client_id = create_client(cursor, "Hilma")
-    service_id = create_service(cursor)
+    client_id = create_client(cursor, user_ids["admin"], "Hilma")
+    service_id = create_service(cursor, user_ids["admin"])
 
     visit_id = add_planned_visit(
+        user_ids["worker"],
         client_id,
         service_id,
         planned_date=date(2026, 11, 25),
         planned_duration_minutes=60
     )
 
-    save_visit_trip(visit_id, THREE_LEGS)
+    save_visit_trip(user_ids["worker"], visit_id, THREE_LEGS)
 
     legs_before = get_saved_legs(cursor, visit_id)
-    visit_before = get_visit(visit_id)
+    visit_before = get_visit(user_ids["worker"], visit_id)
 
     # A real database error at the very last step: the old legs are already
     # deleted and all new legs inserted when the total is updated.
     # (tests/test_visit_trips.py covers a failure in the middle of the
     # inserts.)
-    def update_then_fail(cursor, visit_id, distance_km):
+    def update_then_fail(cursor, updated_by_user_id, visit_id, distance_km):
         cursor.execute(
             "UPDATE visits SET no_such_column = %s WHERE id = %s",
             (distance_km, visit_id)
@@ -484,12 +502,12 @@ def test_failure_after_all_legs_rolls_back_everything(
     ]
 
     with pytest.raises(psycopg.Error):
-        save_visit_trip(visit_id, new_legs)
+        save_visit_trip(user_ids["worker"], visit_id, new_legs)
 
     # The old legs, the old total and the rest of the visit are as before,
     # and no new legs were left behind
     assert get_saved_legs(cursor, visit_id) == legs_before
-    assert get_visit(visit_id) == visit_before
+    assert get_visit(user_ids["worker"], visit_id) == visit_before
 
     cursor.execute(
         "SELECT COUNT(*) FROM visit_trip_legs WHERE visit_id = %s",

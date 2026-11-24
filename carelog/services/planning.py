@@ -10,7 +10,7 @@ from carelog.services.visits import (
 def get_visit_day(visit: dict) -> date | None:
 
     # Returns the local calendar day of a visit, or None if the visit
-    # has no day yet. DATETIME values come from the database in UTC
+    # has no day yet. TIMESTAMP values come from the database in UTC
     # without a time zone, so UTC is attached before converting.
 
     if visit["status"] == "completed":
@@ -37,7 +37,14 @@ def get_visit_day(visit: dict) -> date | None:
     return None
 
 
-def get_week_plan(week_start: date) -> dict:
+def get_week_plan(
+    actor_user_id: int,
+    week_start: date,
+    user_id: int | None = None
+) -> dict:
+
+    # The visits are limited by get_week_visits(): a worker sees only
+    # their own visits, an admin every worker's, or the worker user_id's.
 
     # Week start validation
     # A datetime is also a date in Python, so type() is used to reject it.
@@ -63,7 +70,7 @@ def get_week_plan(week_start: date) -> dict:
     # The visits come already in order, and the order is kept inside
     # each day. The original dictionaries are added as they are.
 
-    visits = get_week_visits(week_start)
+    visits = get_week_visits(actor_user_id, week_start, user_id)
 
     for visit in visits:
         visit_day = get_visit_day(visit)
@@ -89,7 +96,13 @@ def get_week_plan(week_start: date) -> dict:
     }
 
 
-def get_week_summary(week_start: date) -> dict:
+def get_week_summary(
+    actor_user_id: int,
+    week_start: date,
+    user_id: int | None = None
+) -> dict:
+
+    # The visits are limited as in get_week_plan().
 
     # Week start validation, the same rule as in get_week_plan()
 
@@ -116,7 +129,7 @@ def get_week_summary(week_start: date) -> dict:
 
     urgent_planned_count = 0
 
-    visits = get_week_visits(week_start)
+    visits = get_week_visits(actor_user_id, week_start, user_id)
 
     for visit in visits:
 
@@ -157,10 +170,15 @@ def get_week_summary(week_start: date) -> dict:
     }
 
 
-def get_overdue_planned_visits(reference_date: date | None = None) -> list[dict]:
+def get_overdue_planned_visits(
+    actor_user_id: int,
+    reference_date: date | None = None,
+    user_id: int | None = None
+) -> list[dict]:
 
     # Returns the planned visits whose day or week has already passed.
     # This only reads data; the user decides later what to do with them.
+    # The visits are limited by get_planned_visits(), as in get_week_plan().
 
     # Reference date validation
     # Without a date, today in Helsinki is used, not the UTC date.
@@ -173,7 +191,7 @@ def get_overdue_planned_visits(reference_date: date | None = None) -> list[dict]
 
     overdue_visits = []
 
-    visits = get_planned_visits()
+    visits = get_planned_visits(actor_user_id, user_id)
 
     for visit in visits:
 

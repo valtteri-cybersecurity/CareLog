@@ -4,25 +4,19 @@ from uuid import uuid4
 import psycopg
 import pytest
 
-from carelog.database.postgres_migrations import (
-    v001_users as postgres_v001_users,
-    v002_clients as postgres_v002_clients,
-    v003_services as postgres_v003_services,
-    v004_trips as postgres_v004_trips,
-    v005_visits as postgres_v005_visits,
-    v006_visit_notes as postgres_v006_visit_notes,
-    v007_expenses as postgres_v007_expenses,
-    v008_business_constraints as postgres_v008_business_constraints,
-    v009_visit_scheduling as postgres_v009_visit_scheduling,
-    v010_visit_constraints as postgres_v010_visit_constraints,
-    v011_visit_trip_legs as postgres_v011_visit_trip_legs,
-    v013_visit_note_history as postgres_v013_visit_note_history,
-)
+from carelog.database import postgres_migrate
+from tests.postgres_helpers import insert_test_users
 
 
 # PostgreSQL fixtures. Every test gets its own temporary database named
 # carelog_test_*, which is dropped after the test. Use a separate,
 # disposable PostgreSQL server for these tests.
+#
+# - postgres_cursor: an empty database, for the migration tests that
+#   build older schema versions themselves.
+# - migrated_cursor: the full current schema, for everything else. All
+#   migrations are run once per test session into a template database,
+#   and every test gets its own copy of it.
 
 # A disposable test server is marked with this comment on its postgres
 # database. Set it only on a server whose data may be lost:
@@ -97,7 +91,7 @@ def test_server_settings():
     return settings
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def connect_to_test_postgres(test_server_settings):
     def connect(database="postgres", user=None, password=None, autocommit=False):
         if user is None:
@@ -120,13 +114,17 @@ def connect_to_test_postgres(test_server_settings):
     return connect
 
 
-@pytest.fixture
-def postgres_cursor(connect_to_test_postgres):
+def create_test_database(connect_to_test_postgres, template=None):
+    # Creates a temporary test database, empty or as a copy of template,
+    # yields a cursor to it and drops it afterwards.
     database = f"carelog_test_{uuid4().hex}"
     admin_connection = connect_to_test_postgres(autocommit=True)
 
     with admin_connection:
-        admin_connection.execute(f'CREATE DATABASE "{database}"')
+        if template is None:
+            admin_connection.execute(f'CREATE DATABASE "{database}"')
+        else:
+            admin_connection.execute(f'CREATE DATABASE "{database}" TEMPLATE "{template}"')
 
         try:
             # autocommit: every statement of the test is saved at once, so
@@ -142,62 +140,95 @@ def postgres_cursor(connect_to_test_postgres):
 
 
 @pytest.fixture
-def postgres_cursor_with_clients(postgres_cursor):
-    # v002 uses the set_updated_at() trigger function created in v001.
-    postgres_v001_users.upgrade(postgres_cursor)
-    postgres_v002_clients.upgrade(postgres_cursor)
-    return postgres_cursor
+def postgres_cursor(connect_to_test_postgres):
+    yield from create_test_database(connect_to_test_postgres)
+
+
+@pytest.fixture(scope="session")
+def migrated_template_database(connect_to_test_postgres):
+    # Runs every migration once per test session into a template
+    # database, with apply_migrations(), the same function that
+    # run_postgres_migrations() uses in production.
+    #
+    # Three kinds of connections are kept apart:
+    # - admin_connection (autocommit): CREATE and DROP DATABASE, which
+    #   PostgreSQL does not allow inside a transaction
+    # - migration_connection (autocommit off): apply_migrations() runs
+    #   each migration in its own transaction
+    # - the test cursors of create_test_database() (autocommit)
+    database = f"carelog_test_template_{uuid4().hex}"
+    admin_connection = connect_to_test_postgres(autocommit=True)
+
+    with admin_connection:
+        admin_connection.execute(f'CREATE DATABASE "{database}"')
+
+        try:
+            migration_connection = connect_to_test_postgres(database=database, autocommit=False)
+
+            # The connection is closed before the copies are made:
+            # PostgreSQL copies a template only when nobody is connected.
+            try:
+                postgres_migrate.apply_migrations(migration_connection)
+            finally:
+                migration_connection.close()
+
+            yield database
+
+        finally:
+            admin_connection.execute(f'DROP DATABASE "{database}" WITH (FORCE)')
 
 
 @pytest.fixture
-def postgres_cursor_with_clients_and_services(postgres_cursor_with_clients):
-    postgres_v003_services.upgrade(postgres_cursor_with_clients)
-    return postgres_cursor_with_clients
+def migrated_cursor(connect_to_test_postgres, migrated_template_database):
+    yield from create_test_database(connect_to_test_postgres, migrated_template_database)
 
 
 @pytest.fixture
-def postgres_cursor_with_trips(postgres_cursor_with_clients):
-    postgres_v004_trips.upgrade(postgres_cursor_with_clients)
-    return postgres_cursor_with_clients
+def user_ids(migrated_cursor):
+    # Test users with the ids that the database gave them
+    return insert_test_users(migrated_cursor)
+
+
+# The fixtures below are kept so that the tests need not be renamed.
+# Every one of them now gives the full current schema, so the service
+# tests run against the same schema as the application.
 
 
 @pytest.fixture
-def postgres_cursor_with_visits(postgres_cursor_with_clients_and_services):
-    postgres_v005_visits.upgrade(postgres_cursor_with_clients_and_services)
-    return postgres_cursor_with_clients_and_services
+def postgres_cursor_with_clients(migrated_cursor):
+    return migrated_cursor
 
 
 @pytest.fixture
-def postgres_cursor_with_visit_scheduling(postgres_cursor_with_visits):
-    postgres_v009_visit_scheduling.upgrade(postgres_cursor_with_visits)
-    postgres_v010_visit_constraints.upgrade(postgres_cursor_with_visits)
-    return postgres_cursor_with_visits
+def postgres_cursor_with_clients_and_services(migrated_cursor):
+    return migrated_cursor
 
 
 @pytest.fixture
-def postgres_cursor_with_visit_notes(postgres_cursor_with_visit_scheduling):
-    # v013 adds updated_at and the edit history of notes. It needs the
-    # users table of v001 for edited_by_user_id.
-    postgres_v006_visit_notes.upgrade(postgres_cursor_with_visit_scheduling)
-    postgres_v013_visit_note_history.upgrade(postgres_cursor_with_visit_scheduling)
-    return postgres_cursor_with_visit_scheduling
+def postgres_cursor_with_trips(migrated_cursor):
+    return migrated_cursor
 
 
 @pytest.fixture
-def postgres_cursor_with_expenses(postgres_cursor_with_visit_scheduling):
-    cursor = postgres_cursor_with_visit_scheduling
-
-    # v008 adds CHECK constraints to all of these tables, including
-    # amount > 0 for expenses, so the other tables are created too.
-    postgres_v004_trips.upgrade(cursor)
-    postgres_v006_visit_notes.upgrade(cursor)
-    postgres_v007_expenses.upgrade(cursor)
-    postgres_v008_business_constraints.upgrade(cursor)
-
-    return cursor
+def postgres_cursor_with_visits(migrated_cursor):
+    return migrated_cursor
 
 
 @pytest.fixture
-def postgres_cursor_with_visit_trips(postgres_cursor_with_visit_scheduling):
-    postgres_v011_visit_trip_legs.upgrade(postgres_cursor_with_visit_scheduling)
-    return postgres_cursor_with_visit_scheduling
+def postgres_cursor_with_visit_scheduling(migrated_cursor):
+    return migrated_cursor
+
+
+@pytest.fixture
+def postgres_cursor_with_visit_notes(migrated_cursor):
+    return migrated_cursor
+
+
+@pytest.fixture
+def postgres_cursor_with_expenses(migrated_cursor):
+    return migrated_cursor
+
+
+@pytest.fixture
+def postgres_cursor_with_visit_trips(migrated_cursor):
+    return migrated_cursor

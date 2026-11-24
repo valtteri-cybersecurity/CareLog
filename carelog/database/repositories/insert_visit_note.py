@@ -3,6 +3,7 @@ from psycopg import Cursor
 
 def insert_visit_note(
     cursor: Cursor,
+    created_by_user_id: int,
     visit_id: int,
     content: str
 ) -> int:
@@ -14,15 +15,16 @@ def insert_visit_note(
     sql = """
         INSERT INTO visit_notes (
             visit_id,
-            content
+            content,
+            created_by_user_id
         )
-        VALUES (%s, %s)
+        VALUES (%s, %s, %s)
         RETURNING id
     """
 
     cursor.execute(
         sql,
-        (visit_id, content)
+        (visit_id, content, created_by_user_id)
     )
 
     # RETURNING id gives the id that PostgreSQL created for the row.

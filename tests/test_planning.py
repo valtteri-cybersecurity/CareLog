@@ -57,7 +57,7 @@ def use_week_visits(monkeypatch, visits):
     # Replaces get_week_visits() and remembers how it was called
     calls = []
 
-    def fake_get_week_visits(week_start):
+    def fake_get_week_visits(actor_user_id, week_start, user_id=None):
         calls.append(week_start)
         return visits
 
@@ -128,7 +128,7 @@ def test_get_week_plan_rejects_invalid_week_start(monkeypatch):
 
     for week_start in invalid_values:
         with pytest.raises(ValueError):
-            get_week_plan(week_start)
+            get_week_plan(1, week_start)
 
     # The visits are not fetched when the week start is invalid
     assert calls == []
@@ -137,7 +137,7 @@ def test_get_week_plan_rejects_invalid_week_start(monkeypatch):
 def test_get_week_plan_returns_seven_days_for_empty_week(monkeypatch):
     calls = use_week_visits(monkeypatch, [])
 
-    plan = get_week_plan(date(2026, 11, 23))
+    plan = get_week_plan(1, date(2026, 11, 23))
 
     expected_days = [
         {"date": date(2026, 11, 23), "visits": []},
@@ -179,7 +179,7 @@ def test_get_week_plan_places_planned_visits(monkeypatch):
 
     use_week_visits(monkeypatch, [week_only, day_level, time_only])
 
-    plan = get_week_plan(date(2026, 11, 23))
+    plan = get_week_plan(1, date(2026, 11, 23))
 
     assert plan["unscheduled"] == [week_only]
     assert plan["days"][2]["date"] == date(2026, 11, 25)
@@ -210,7 +210,7 @@ def test_get_week_plan_places_completed_visits_on_actual_day(monkeypatch):
 
     use_week_visits(monkeypatch, [old_completed, completed])
 
-    plan = get_week_plan(date(2026, 11, 23))
+    plan = get_week_plan(1, date(2026, 11, 23))
 
     assert plan["days"][0]["visits"] == [old_completed]
     assert plan["days"][1]["visits"] == []
@@ -225,7 +225,7 @@ def test_get_week_plan_keeps_order_and_original_dictionaries(monkeypatch):
 
     use_week_visits(monkeypatch, [first, second, third])
 
-    plan = get_week_plan(date(2026, 11, 23))
+    plan = get_week_plan(1, date(2026, 11, 23))
 
     wednesday_visits = plan["days"][2]["visits"]
 
@@ -248,7 +248,7 @@ def test_get_week_plan_keeps_visit_with_day_outside_week(monkeypatch):
 
     use_week_visits(monkeypatch, [inconsistent])
 
-    plan = get_week_plan(date(2026, 11, 23))
+    plan = get_week_plan(1, date(2026, 11, 23))
 
     assert plan["unscheduled"] == [inconsistent]
 
@@ -271,7 +271,7 @@ def test_get_week_summary_rejects_invalid_week_start(monkeypatch):
 
     for week_start in invalid_values:
         with pytest.raises(ValueError):
-            get_week_summary(week_start)
+            get_week_summary(1, week_start)
 
     assert calls == []
 
@@ -279,7 +279,7 @@ def test_get_week_summary_rejects_invalid_week_start(monkeypatch):
 def test_get_week_summary_returns_zeros_for_empty_week(monkeypatch):
     calls = use_week_visits(monkeypatch, [])
 
-    summary = get_week_summary(date(2026, 11, 23))
+    summary = get_week_summary(1, date(2026, 11, 23))
 
     assert summary == {
         "week_start": date(2026, 11, 23),
@@ -322,7 +322,7 @@ def test_get_week_summary_counts_visits_and_minutes(monkeypatch):
 
     calls = use_week_visits(monkeypatch, visits)
 
-    summary = get_week_summary(date(2026, 11, 23))
+    summary = get_week_summary(1, date(2026, 11, 23))
 
     assert summary["planned_count"] == 3
     assert summary["completed_count"] == 2
@@ -351,7 +351,7 @@ def test_get_week_summary_with_only_unknown_durations(monkeypatch):
 
     use_week_visits(monkeypatch, visits)
 
-    summary = get_week_summary(date(2026, 11, 23))
+    summary = get_week_summary(1, date(2026, 11, 23))
 
     # 0 minutes here means "no known minutes", which the counters show
     assert summary["planned_minutes"] == 0
@@ -378,7 +378,7 @@ def test_get_week_summary_counts_moved_visit_in_completed_week(monkeypatch):
         date(2026, 11, 23): [moved_visit],
     }
 
-    def fake_get_week_visits(week_start):
+    def fake_get_week_visits(actor_user_id, week_start, user_id=None):
         return visits_by_week[week_start]
 
     monkeypatch.setattr(
@@ -386,8 +386,8 @@ def test_get_week_summary_counts_moved_visit_in_completed_week(monkeypatch):
         fake_get_week_visits
     )
 
-    planned_week_summary = get_week_summary(date(2026, 11, 16))
-    completed_week_summary = get_week_summary(date(2026, 11, 23))
+    planned_week_summary = get_week_summary(1, date(2026, 11, 16))
+    completed_week_summary = get_week_summary(1, date(2026, 11, 23))
 
     assert planned_week_summary["planned_count"] == 0
     assert planned_week_summary["total_count"] == 0
@@ -405,7 +405,7 @@ def use_planned_visits(monkeypatch, visits):
     # Replaces get_planned_visits() and remembers how many times it was called
     calls = []
 
-    def fake_get_planned_visits():
+    def fake_get_planned_visits(actor_user_id, user_id=None):
         calls.append(True)
         return visits
 
@@ -422,7 +422,7 @@ def test_get_overdue_planned_visits_rejects_invalid_reference_date(monkeypatch):
 
     for reference_date in (datetime(2026, 11, 25, 12, 0), "2026-11-25", 20261125):
         with pytest.raises(ValueError):
-            get_overdue_planned_visits(reference_date)
+            get_overdue_planned_visits(1, reference_date)
 
     # The visits are not fetched when the date is invalid
     assert calls == []
@@ -431,7 +431,7 @@ def test_get_overdue_planned_visits_rejects_invalid_reference_date(monkeypatch):
 def test_get_overdue_planned_visits_returns_empty_list(monkeypatch):
     calls = use_planned_visits(monkeypatch, [])
 
-    assert get_overdue_planned_visits(date(2026, 11, 25)) == []
+    assert get_overdue_planned_visits(1, date(2026, 11, 25)) == []
     assert calls == [True]
 
 
@@ -452,7 +452,7 @@ def test_get_overdue_planned_visits_compares_days(monkeypatch):
         [yesterday, today, tomorrow, old_today, old_yesterday]
     )
 
-    overdue = get_overdue_planned_visits(date(2026, 11, 25))
+    overdue = get_overdue_planned_visits(1, date(2026, 11, 25))
 
     assert overdue == [yesterday, old_yesterday]
 
@@ -466,11 +466,11 @@ def test_get_overdue_planned_visits_handles_week_only_visits(monkeypatch):
 
     use_planned_visits(monkeypatch, [last_week, this_week])
 
-    assert get_overdue_planned_visits(date(2026, 11, 23)) == [last_week]
-    assert get_overdue_planned_visits(date(2026, 11, 29)) == [last_week]
+    assert get_overdue_planned_visits(1, date(2026, 11, 23)) == [last_week]
+    assert get_overdue_planned_visits(1, date(2026, 11, 29)) == [last_week]
 
     # On the Monday after, this week's visit is late too
-    assert get_overdue_planned_visits(date(2026, 11, 30)) == [
+    assert get_overdue_planned_visits(1, date(2026, 11, 30)) == [
         last_week,
         this_week,
     ]
@@ -497,7 +497,7 @@ def test_get_overdue_planned_visits_prefers_exact_day(monkeypatch):
 
     use_planned_visits(monkeypatch, visits)
 
-    overdue = get_overdue_planned_visits(date(2026, 11, 25))
+    overdue = get_overdue_planned_visits(1, date(2026, 11, 25))
 
     assert overdue == [past_day_in_current_week]
 
@@ -515,7 +515,7 @@ def test_get_overdue_planned_visits_keeps_order(monkeypatch):
 
     use_planned_visits(monkeypatch, [first, not_late, second, third])
 
-    assert get_overdue_planned_visits(date(2026, 11, 25)) == [
+    assert get_overdue_planned_visits(1, date(2026, 11, 25)) == [
         first,
         second,
         third,
@@ -530,4 +530,34 @@ def test_get_overdue_planned_visits_uses_today_in_helsinki(monkeypatch):
 
     use_planned_visits(monkeypatch, [long_ago, far_future])
 
-    assert get_overdue_planned_visits() == [long_ago]
+    assert get_overdue_planned_visits(1) == [long_ago]
+
+
+# USER FILTER TESTS
+# The visit searches limit the visits to the actor's own, or for an
+# admin to the worker user_id. The planning functions pass both on.
+
+
+def test_planning_passes_actor_and_worker_to_visit_searches(monkeypatch):
+    calls = []
+
+    def fake_get_week_visits(actor_user_id, week_start, user_id=None):
+        calls.append((actor_user_id, week_start, user_id))
+        return []
+
+    def fake_get_planned_visits(actor_user_id, user_id=None):
+        calls.append((actor_user_id, user_id))
+        return []
+
+    monkeypatch.setattr("carelog.services.planning.get_week_visits", fake_get_week_visits)
+    monkeypatch.setattr("carelog.services.planning.get_planned_visits", fake_get_planned_visits)
+
+    get_week_plan(5, date(2026, 11, 23), 7)
+    get_week_summary(5, date(2026, 11, 23))
+    get_overdue_planned_visits(5, date(2026, 11, 25), user_id=7)
+
+    assert calls == [
+        (5, date(2026, 11, 23), 7),
+        (5, date(2026, 11, 23), None),
+        (5, 7),
+    ]

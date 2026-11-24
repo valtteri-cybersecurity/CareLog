@@ -10,6 +10,7 @@ ALLOWED_FIELDS = (
 
 def update_service_record(
     cursor: Cursor,
+    updated_by_user_id: int,
     service_id: int,
     changes: dict
 ) -> bool:
@@ -43,6 +44,11 @@ def update_service_record(
 
     if not updates:
         raise ValueError("No fields to update")
+
+    # The latest editor is not one of ALLOWED_FIELDS: it always comes
+    # from the user who performs the update.
+    updates.append("updated_by_user_id = %s")
+    values.append(updated_by_user_id)
 
     sql = "UPDATE services SET "
     sql += ", ".join(updates)

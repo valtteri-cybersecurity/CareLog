@@ -7,13 +7,26 @@ from carelog.database.repositories.select_visit_status_for_update import (
 from carelog.database.repositories.select_visit_trip_legs import select_visit_trip_legs
 from carelog.database.repositories.update_visit_distance import update_visit_distance
 from carelog.services.trips import calculate_trip_distance, validate_trip_leg
+from carelog.services.user_validation import (
+    get_active_user,
+    get_owner_filter,
+    validate_user_id,
+)
 
 
-def save_visit_trip(visit_id: int, legs: list[dict]) -> bool:
+def save_visit_trip(actor_user_id: int, visit_id: int, legs: list[dict]) -> bool:
 
     # Saves the legs of the trip driven for a visit and the total distance
     # of the visit in one transaction. A new list replaces the old legs.
-    # visits.distance_km stays the only source of kilometres for reports.
+    # visits.distance_km stays the only source of kilometres for reports,
+    # and the kilometres belong to the worker of the visit (visits.user_id).
+    # A worker may save legs only for their own visits; another worker's
+    # visit gives False, as a missing visit does.
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Visit ID validation
 
@@ -44,8 +57,12 @@ def save_visit_trip(visit_id: int, legs: list[dict]) -> bool:
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
-        # The visit is locked, so two saves for the same visit cannot mix.
-        status = select_visit_status_for_update(cursor, visit_id)
+        actor = get_active_user(cursor, actor_user_id)
+        owner_user_id = get_owner_filter(actor, None)
+
+        # The visit is locked, so two saves for the same visit cannot mix
+        # and the worker of the visit cannot change meanwhile.
+        status = select_visit_status_for_update(cursor, visit_id, owner_user_id)
 
         if status is None:
             return False
@@ -61,6 +78,7 @@ def save_visit_trip(visit_id: int, legs: list[dict]) -> bool:
         for leg in validated_legs:
             insert_visit_trip_leg(
                 cursor,
+                actor["id"],
                 visit_id,
                 position,
                 leg["start_location"],
@@ -70,7 +88,7 @@ def save_visit_trip(visit_id: int, legs: list[dict]) -> bool:
 
             position += 1
 
-        update_visit_distance(cursor, visit_id, total_km)
+        update_visit_distance(cursor, actor["id"], visit_id, total_km)
 
         connection.commit()
 
@@ -89,10 +107,18 @@ def save_visit_trip(visit_id: int, legs: list[dict]) -> bool:
             connection.close()
 
 
-def get_visit_trip(visit_id: int) -> list[dict]:
+def get_visit_trip(actor_user_id: int, visit_id: int) -> list[dict]:
+
+    # A worker gets the legs of their own visits only.
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Visit ID validation
-    # A visit without legs, or a visit that does not exist, gives [].
+    # A visit without legs, a visit that does not exist, or another
+    # worker's visit gives [].
 
     if type(visit_id) is not int:
         raise ValueError("Visit ID must be an integer")
@@ -109,7 +135,10 @@ def get_visit_trip(visit_id: int) -> list[dict]:
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
-        legs = select_visit_trip_legs(cursor, visit_id)
+        actor = get_active_user(cursor, actor_user_id)
+        owner_user_id = get_owner_filter(actor, None)
+
+        legs = select_visit_trip_legs(cursor, visit_id, owner_user_id)
 
         return legs
 

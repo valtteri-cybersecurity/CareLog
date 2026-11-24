@@ -6,11 +6,18 @@ from carelog.database.postgres_connection import get_postgres_connection
 from carelog.database.repositories.insert_expense import insert_expense
 from carelog.database.repositories.select_expense import select_expense
 from carelog.database.repositories.select_expenses import select_expenses
+from carelog.database.repositories.select_visit import select_visit
 from carelog.database.repositories.select_visit_expenses import select_visit_expenses
 from carelog.database.repositories.update_expense import (
     ALLOWED_FIELDS,
     select_expense_for_update,
     update_expense_record,
+)
+from carelog.services.user_validation import (
+    get_active_user,
+    get_owner_filter,
+    resolve_owner_id,
+    validate_user_id,
 )
 
 
@@ -82,7 +89,7 @@ def validate_expense_date(expense_date: date) -> date:
 def validate_visit_id(visit_id: int | None) -> int | None:
 
     # None means a general expense without a visit.
-    # The foreign key in the database checks that the visit exists.
+    # check_visit_link() checks that the visit exists and may be used.
 
     if visit_id is None:
         return None
@@ -115,13 +122,47 @@ def validate_expense_description(description: str | None) -> str | None:
     return description
 
 
+def check_visit_link(cursor, actor: dict, visit_id: int) -> None:
+
+    # A worker may link an expense only to their own visit, an admin to
+    # the visit of any worker. A missing visit and another worker's visit
+    # give the same error, so the other visit's existence is not revealed.
+    # The visit row is locked, so its worker cannot change before commit.
+    #
+    # The link does not give the owner of the expense any access to the
+    # visit itself.
+
+    owner_user_id = get_owner_filter(actor, None)
+
+    visit = select_visit(
+        cursor,
+        visit_id,
+        for_update=True,
+        owner_user_id=owner_user_id
+    )
+
+    if visit is None:
+        raise ValueError("Visit not found")
+
+
 def add_expense(
+    actor_user_id: int,
     expense_date: date,
     amount: Decimal | int | float,
     category: str,
     visit_id: int | None = None,
-    description: str | None = None
+    description: str | None = None,
+    user_id: int | None = None
 ) -> int:
+
+    # The owner of the expense (user_id) is the actor unless an admin
+    # chooses another active worker. It is not taken from the visit: the
+    # owner of an expense can differ from the worker of its visit.
+
+    validate_user_id(actor_user_id)
+
+    if user_id is not None:
+        validate_user_id(user_id)
 
     # Expense date validation
 
@@ -156,8 +197,17 @@ def add_expense(
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
+        # Users first, then the visit row, as in the visit functions
+        actor = get_active_user(cursor, actor_user_id)
+        owner_id = resolve_owner_id(cursor, actor, user_id)
+
+        if visit_id is not None:
+            check_visit_link(cursor, actor, visit_id)
+
         expense_id = insert_expense(
             cursor,
+            owner_id,
+            actor["id"],
             expense_date,
             amount,
             category,
@@ -182,7 +232,16 @@ def add_expense(
             connection.close()
 
 
-def get_expense(expense_id: int) -> dict | None:
+def get_expense(actor_user_id: int, expense_id: int) -> dict | None:
+
+    # A worker gets only their own expenses. Another worker's expense
+    # gives None, as a missing expense does. Only the expense row is
+    # returned, never data of the visit.
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Expense ID validation
 
@@ -203,7 +262,10 @@ def get_expense(expense_id: int) -> dict | None:
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
-        expense = select_expense(cursor, expense_id)
+        actor = get_active_user(cursor, actor_user_id)
+        owner_user_id = get_owner_filter(actor, None)
+
+        expense = select_expense(cursor, expense_id, owner_user_id)
 
         return expense
 
@@ -215,7 +277,16 @@ def get_expense(expense_id: int) -> dict | None:
             connection.close()
 
 
-def get_visit_expenses(visit_id: int) -> list[dict]:
+def get_visit_expenses(actor_user_id: int, visit_id: int) -> list[dict]:
+
+    # A worker gets only their own expenses of the visit, also when the
+    # visit belongs to another worker. Only expense rows are returned, so
+    # nothing else about the visit is revealed.
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Visit ID validation
     # A visit that does not exist simply has no expenses, so the result
@@ -236,7 +307,10 @@ def get_visit_expenses(visit_id: int) -> list[dict]:
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
-        expenses = select_visit_expenses(cursor, visit_id)
+        actor = get_active_user(cursor, actor_user_id)
+        owner_user_id = get_owner_filter(actor, None)
+
+        expenses = select_visit_expenses(cursor, visit_id, owner_user_id)
 
         return expenses
 
@@ -249,14 +323,26 @@ def get_visit_expenses(visit_id: int) -> list[dict]:
 
 
 def get_expenses(
+    actor_user_id: int,
     start_date: date | None = None,
     end_date: date | None = None,
     category: str | None = None,
-    client_id: int | None = None
+    client_id: int | None = None,
+    user_id: int | None = None
 ) -> list[dict]:
 
-    # All filters are optional. Without filters every expense is returned.
-    # The filters that are given must all match.
+    # All filters are optional. Without filters every expense the actor
+    # may see is returned: a worker's own expenses, or for an admin the
+    # expenses of every worker, or of the worker user_id. The filters
+    # that are given must all match.
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
+
+    if user_id is not None:
+        validate_user_id(user_id)
 
     # Date validation
     # A datetime is also a date in Python, so type() is used to reject it.
@@ -296,12 +382,16 @@ def get_expenses(
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
+        actor = get_active_user(cursor, actor_user_id)
+        owner_user_id = get_owner_filter(actor, user_id)
+
         expenses = select_expenses(
             cursor,
             start_date,
             end_date,
             category,
-            client_id
+            client_id,
+            owner_user_id
         )
 
         return expenses
@@ -314,7 +404,15 @@ def get_expenses(
             connection.close()
 
 
-def update_expense(expense_id: int, changes: dict) -> bool:
+def update_expense(actor_user_id: int, expense_id: int, changes: dict) -> bool:
+
+    # A worker may update only their own expenses. The owner (user_id)
+    # is not one of ALLOWED_FIELDS, so it never changes here.
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Expense ID validation
 
@@ -364,8 +462,12 @@ def update_expense(expense_id: int, changes: dict) -> bool:
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
+        actor = get_active_user(cursor, actor_user_id)
+        owner_user_id = get_owner_filter(actor, None)
+
         # The row is locked, so the check below uses current data.
-        expense = select_expense_for_update(cursor, expense_id)
+        # Another worker's expense is not found.
+        expense = select_expense_for_update(cursor, expense_id, owner_user_id)
 
         if expense is None:
             return False
@@ -383,8 +485,14 @@ def update_expense(expense_id: int, changes: dict) -> bool:
         if category == "customer" and visit_id is None:
             raise ValueError("A customer expense requires a visit")
 
+        # A new visit link follows the same rule as in add_expense(). The
+        # expense row is locked first, then the visit row.
+        if "visit_id" in validated_changes and validated_changes["visit_id"] is not None:
+            check_visit_link(cursor, actor, validated_changes["visit_id"])
+
         updated = update_expense_record(
             cursor,
+            actor["id"],
             expense_id,
             validated_changes
         )

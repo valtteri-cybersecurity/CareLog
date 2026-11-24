@@ -4,7 +4,8 @@ from psycopg import Cursor
 def select_trips(cursor: Cursor, client_id: int) -> list[dict]:
 
     sql = """
-        SELECT id, client_id, start_location, destination, distance_km
+        SELECT id, client_id, start_location, destination, distance_km,
+               created_by_user_id, updated_by_user_id, updated_at
         FROM trips
         WHERE client_id = %s
         ORDER BY start_location, destination, id

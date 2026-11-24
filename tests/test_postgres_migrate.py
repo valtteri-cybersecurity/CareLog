@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import pytest
+from psycopg import pq
 
 from carelog.database import postgres_migrate
 from carelog.database.postgres_migrations import (
@@ -16,11 +17,22 @@ from carelog.database.postgres_migrations import (
     v010_visit_constraints,
     v011_visit_trip_legs,
     v012_foreign_key_indexes,
+    v014_user_tracking,
 )
-from tests.postgres_helpers import get_columns, insert_visit, table_exists
+from tests.postgres_helpers import (
+    get_columns,
+    insert_client,
+    insert_service,
+    insert_user,
+    insert_visit,
+    table_exists,
+)
 
 
-EXPECTED_VERSIONS = set(range(1, 14))
+EXPECTED_VERSIONS = set(range(1, 15))
+
+# The versions before user tracking (v014)
+VERSIONS_UNTIL_V013 = set(range(1, 14))
 
 
 @pytest.fixture
@@ -39,6 +51,35 @@ def migration_database(postgres_cursor, connect_to_test_postgres, monkeypatch):
     monkeypatch.setattr(postgres_migrate, "get_postgres_connection", get_test_connection)
 
     return database
+
+
+def use_migrations_until(monkeypatch, last_version):
+    # The runner knows only the migrations up to last_version, as an
+    # earlier release did. v014 refuses rows without a known creator, so
+    # the upgrade tests of old databases with rows stop at v013.
+    migrations = []
+
+    for version, table, upgrade in postgres_migrate.MIGRATIONS:
+        if version <= last_version:
+            migrations.append((version, table, upgrade))
+
+    monkeypatch.setattr(postgres_migrate, "MIGRATIONS", migrations)
+
+
+def build_database_until(cursor, last_version):
+    # A database as an earlier release left it: the migrations up to
+    # last_version and their version records.
+    postgres_migrate.create_migrations_table(cursor)
+
+    for version, table, upgrade in postgres_migrate.MIGRATIONS:
+        if version <= last_version:
+            upgrade(cursor)
+            postgres_migrate.record_migration(cursor, version)
+
+
+def function_exists(cursor, name):
+    cursor.execute("SELECT COUNT(*) FROM pg_proc WHERE proname = %s", (name,))
+    return cursor.fetchone()[0] == 1
 
 
 def test_run_migrations_requires_password():
@@ -103,6 +144,22 @@ def test_run_migrations_creates_correct_columns(postgres_cursor, migration_datab
     assert ("duration_minutes", "integer", "YES", None) in visits
     assert ("description", "character varying", "YES", None) in expenses
 
+    # User tracking of v014: the worker and the creator are required, the
+    # latest editor is empty until the first change.
+    assert ("created_by_user_id", "integer", "NO", None) in clients
+    assert ("updated_by_user_id", "integer", "YES", None) in clients
+    assert ("user_id", "integer", "NO", None) in visits
+    assert ("user_id", "integer", "NO", None) in expenses
+    assert (
+        "updated_at",
+        "timestamp without time zone",
+        "NO",
+        "(CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text)",
+    ) in services
+
+    for column in visits:
+        assert column[0] != "assigned_user_id"
+
     for column in clients:
         assert column[0] != "personal_identity_code"
 
@@ -141,7 +198,10 @@ def test_run_migrations_creates_business_constraints(postgres_cursor, migration_
     assert constraints == expected
 
 
-def test_upgrade_from_v008_database(postgres_cursor, migration_database):
+def test_upgrade_from_v008_database(postgres_cursor, migration_database, monkeypatch):
+    # The old rows have no creator, so this upgrade stops at v013
+    use_migrations_until(monkeypatch, 13)
+
     # Build a database as an earlier release would have left it: versions 1–8.
     postgres_migrate.create_migrations_table(postgres_cursor)
 
@@ -164,7 +224,7 @@ def test_upgrade_from_v008_database(postgres_cursor, migration_database):
 
     postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
 
-    assert postgres_migrate.get_applied_versions(postgres_cursor) == EXPECTED_VERSIONS
+    assert postgres_migrate.get_applied_versions(postgres_cursor) == VERSIONS_UNTIL_V013
 
     postgres_cursor.execute(
         "SELECT status, priority, planned_date, duration_minutes "
@@ -184,15 +244,18 @@ def test_run_migrations_creates_foreign_key_indexes(postgres_cursor, migration_d
         FROM pg_indexes
         WHERE schemaname = 'public'
           AND indexname LIKE 'idx_%'
-        ORDER BY tablename
+        ORDER BY tablename, indexname
     """)
 
+    # ORDER BY both columns keeps the order of a table's indexes stable
     assert postgres_cursor.fetchall() == [
+        ("expenses", "idx_expenses_user_id"),
         ("expenses", "idx_expenses_visit_id"),
         ("trips", "idx_trips_client_id"),
         ("visit_note_history", "idx_visit_note_history_note_id"),
         ("visit_notes", "idx_visit_notes_visit_id"),
         ("visits", "idx_visits_client_id"),
+        ("visits", "idx_visits_user_id"),
     ]
 
     # visit_trip_legs.visit_id is already the first column of the unique
@@ -207,7 +270,10 @@ def test_run_migrations_creates_foreign_key_indexes(postgres_cursor, migration_d
     ]
 
 
-def test_upgrade_from_v011_database(postgres_cursor, migration_database):
+def test_upgrade_from_v011_database(postgres_cursor, migration_database, monkeypatch):
+    # The old rows have no creator, so this upgrade stops at v013
+    use_migrations_until(monkeypatch, 13)
+
     # Build a database as the previous release left it: versions 1–11.
     postgres_migrate.create_migrations_table(postgres_cursor)
 
@@ -235,7 +301,7 @@ def test_upgrade_from_v011_database(postgres_cursor, migration_database):
     postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
     postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
 
-    assert postgres_migrate.get_applied_versions(postgres_cursor) == EXPECTED_VERSIONS
+    assert postgres_migrate.get_applied_versions(postgres_cursor) == VERSIONS_UNTIL_V013
 
     postgres_cursor.execute("SELECT COUNT(*) FROM pg_indexes WHERE indexname LIKE 'idx_%'")
     assert postgres_cursor.fetchone()[0] == 5
@@ -244,7 +310,10 @@ def test_upgrade_from_v011_database(postgres_cursor, migration_database):
     assert postgres_cursor.fetchall() == [(visit_id,)]
 
 
-def test_upgrade_from_v012_database(postgres_cursor, migration_database):
+def test_upgrade_from_v012_database(postgres_cursor, migration_database, monkeypatch):
+    # The old rows have no creator, so this upgrade stops at v013
+    use_migrations_until(monkeypatch, 13)
+
     # Build a database as the previous release left it: versions 1–12.
     postgres_migrate.create_migrations_table(postgres_cursor)
 
@@ -283,7 +352,7 @@ def test_upgrade_from_v012_database(postgres_cursor, migration_database):
     postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
     postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
 
-    assert postgres_migrate.get_applied_versions(postgres_cursor) == EXPECTED_VERSIONS
+    assert postgres_migrate.get_applied_versions(postgres_cursor) == VERSIONS_UNTIL_V013
 
     # The old note is kept, and it is not marked as edited
     postgres_cursor.execute(
@@ -340,9 +409,198 @@ def test_failed_migration_is_rolled_back(postgres_cursor, migration_database, mo
     assert table_exists(postgres_cursor, "visit_trip_legs")
 
 
+
+def test_failed_schema_check_rolls_back_the_migration(
+    postgres_cursor,
+    migration_database,
+    monkeypatch
+):
+    # v014 runs, but leaves an index that the schema check does not
+    # expect. The check fails after the changes, inside the same
+    # transaction as the migration and its version record.
+    def upgrade_with_unexpected_index(cursor):
+        v014_user_tracking.upgrade(cursor)
+        cursor.execute("CREATE INDEX idx_visits_unexpected ON visits (status)")
+
+    original_migrations = postgres_migrate.MIGRATIONS
+    changed_migrations = []
+
+    for version, table, upgrade in original_migrations:
+        if version == 14:
+            upgrade = upgrade_with_unexpected_index
+
+        changed_migrations.append((version, table, upgrade))
+
+    monkeypatch.setattr(postgres_migrate, "MIGRATIONS", changed_migrations)
+
+    with pytest.raises(RuntimeError, match="Invalid indexes in table: visits"):
+        postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
+
+    # Migrations 1–13 stay. Every change of v014 was rolled back with its
+    # version record.
+    assert postgres_migrate.get_applied_versions(postgres_cursor) == VERSIONS_UNTIL_V013
+
+    for column in get_columns(postgres_cursor, "clients"):
+        assert column[0] != "created_by_user_id"
+
+    assert not function_exists(postgres_cursor, "prevent_created_by_change")
+
+    # The real v014 completes the migration
+    monkeypatch.setattr(postgres_migrate, "MIGRATIONS", original_migrations)
+    postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
+
+    assert postgres_migrate.get_applied_versions(postgres_cursor) == EXPECTED_VERSIONS
+
+
+def test_apply_migrations_rejects_autocommit_connection(
+    postgres_cursor,
+    migration_database,
+    connect_to_test_postgres
+):
+    connection = connect_to_test_postgres(database=migration_database, autocommit=True)
+
+    try:
+        with pytest.raises(RuntimeError, match="autocommit off"):
+            postgres_migrate.apply_migrations(connection)
+    finally:
+        connection.close()
+
+    # Nothing was changed
+    assert not table_exists(postgres_cursor, "schema_migrations")
+
+
+def test_apply_migrations_rejects_open_transaction(
+    postgres_cursor,
+    migration_database,
+    connect_to_test_postgres
+):
+    connection = connect_to_test_postgres(database=migration_database)
+
+    try:
+        # The caller's own change is waiting in an open transaction
+        connection.execute("CREATE TABLE caller_table (id INT)")
+
+        with pytest.raises(RuntimeError, match="open transaction"):
+            postgres_migrate.apply_migrations(connection)
+
+        # The caller's transaction was neither committed nor rolled back
+        assert connection.info.transaction_status == pq.TransactionStatus.INTRANS
+
+        connection.rollback()
+    finally:
+        connection.close()
+
+    assert not table_exists(postgres_cursor, "caller_table")
+    assert not table_exists(postgres_cursor, "schema_migrations")
+
+
+def test_run_migrations_uses_apply_migrations_and_closes_connection(monkeypatch):
+    # The production runner only opens the connection, calls the shared
+    # apply_migrations() and closes the connection, also after an error.
+    class FakeConnection:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    connection = FakeConnection()
+    calls = []
+
+    def get_test_connection(database=None, user=None, password=None):
+        return connection
+
+    def apply_then_fail(given_connection):
+        calls.append(given_connection)
+        raise RuntimeError("Simulated migration failure")
+
+    monkeypatch.setattr(postgres_migrate, "get_postgres_connection", get_test_connection)
+    monkeypatch.setattr(postgres_migrate, "apply_migrations", apply_then_fail)
+
+    with pytest.raises(RuntimeError, match="Simulated migration failure"):
+        postgres_migrate.run_postgres_migrations(password="test-only")
+
+    assert calls == [connection]
+    assert connection.closed is True
+
+
+def test_template_database_is_migrated_like_production(migrated_cursor):
+    # The test template is built with apply_migrations(), so it has the
+    # same version records and passes the same schema check.
+    assert postgres_migrate.get_applied_versions(migrated_cursor) == EXPECTED_VERSIONS
+    postgres_migrate.validate_schema(migrated_cursor, EXPECTED_VERSIONS)
+
+def test_upgrade_from_v013_database(postgres_cursor, migration_database):
+    build_database_until(postgres_cursor, 13)
+
+    # The check accepts the v013 schema before the upgrade
+    postgres_migrate.validate_schema(postgres_cursor, VERSIONS_UNTIL_V013)
+
+    # Users may exist already. v014 does not change the users table.
+    user_id = insert_user(postgres_cursor)
+
+    # The first run adds only v014, the second run changes nothing.
+    postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
+    postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
+
+    assert postgres_migrate.get_applied_versions(postgres_cursor) == EXPECTED_VERSIONS
+    postgres_migrate.validate_schema(postgres_cursor, EXPECTED_VERSIONS)
+
+    # A new visit has a worker and a creator, and no editor yet
+    visit_id = insert_visit(postgres_cursor, user_id)
+
+    postgres_cursor.execute(
+        "SELECT user_id, created_by_user_id, updated_by_user_id FROM visits WHERE id = %s",
+        (visit_id,),
+    )
+
+    assert postgres_cursor.fetchone() == (user_id, user_id, None)
+
+
+def test_v014_stops_when_records_have_unknown_creator(postgres_cursor, migration_database):
+    build_database_until(postgres_cursor, 13)
+
+    # Development data from before user tracking. A user exists, but the
+    # old rows are never linked to it automatically.
+    user_id = insert_user(postgres_cursor)
+    client_id = insert_client(postgres_cursor)
+    service_id = insert_service(postgres_cursor)
+
+    with pytest.raises(RuntimeError, match="creator is unknown: clients, services"):
+        postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
+
+    # Nothing of v014 was saved, and the v013 schema is still valid
+    assert postgres_migrate.get_applied_versions(postgres_cursor) == VERSIONS_UNTIL_V013
+    postgres_migrate.validate_schema(postgres_cursor, VERSIONS_UNTIL_V013)
+
+    for column in get_columns(postgres_cursor, "clients"):
+        assert column[0] != "created_by_user_id"
+
+    assert not function_exists(postgres_cursor, "prevent_created_by_change")
+
+    # The old rows were kept, and no user was created or linked
+    postgres_cursor.execute("SELECT id FROM clients")
+    assert postgres_cursor.fetchall() == [(client_id,)]
+
+    postgres_cursor.execute("SELECT id FROM services")
+    assert postgres_cursor.fetchall() == [(service_id,)]
+
+    postgres_cursor.execute("SELECT id FROM users")
+    assert postgres_cursor.fetchall() == [(user_id,)]
+
+    # When the administrator has removed the development data, the
+    # migration can be run again.
+    postgres_cursor.execute("DELETE FROM services")
+    postgres_cursor.execute("DELETE FROM clients")
+
+    postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
+
+    assert postgres_migrate.get_applied_versions(postgres_cursor) == EXPECTED_VERSIONS
+
+
 def test_run_migrations_rejects_unknown_version(postgres_cursor, migration_database):
     postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
-    postgres_migrate.record_migration(postgres_cursor, 14)
+    postgres_migrate.record_migration(postgres_cursor, 15)
 
     with pytest.raises(RuntimeError, match="Unknown migration versions"):
         postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
@@ -451,6 +709,35 @@ def test_run_migrations_rejects_missing_table(postgres_cursor, migration_databas
         (
             "GRANT EXECUTE ON FUNCTION save_visit_note_history() TO PUBLIC",
             "Invalid function privileges: save_visit_note_history",
+        ),
+        # User tracking of v014
+        (
+            "ALTER TABLE visits ALTER COLUMN user_id DROP NOT NULL",
+            "Invalid columns in table: visits",
+        ),
+        (
+            "ALTER TABLE visit_note_history ALTER COLUMN edited_by_user_id DROP NOT NULL",
+            "Invalid columns in table: visit_note_history",
+        ),
+        (
+            "ALTER TABLE expenses DROP CONSTRAINT expenses_user_id_fkey",
+            "Invalid foreign keys in table: expenses",
+        ),
+        (
+            "DROP INDEX idx_expenses_user_id",
+            "Invalid indexes in table: expenses",
+        ),
+        (
+            "ALTER TABLE services DISABLE TRIGGER trg_services_updated_at",
+            "Invalid triggers in table: services",
+        ),
+        (
+            "ALTER TABLE clients DISABLE TRIGGER trg_clients_created_by",
+            "Invalid triggers in table: clients",
+        ),
+        (
+            "DROP TRIGGER trg_visit_trip_legs_created_by ON visit_trip_legs",
+            "Invalid triggers in table: visit_trip_legs",
         ),
     ],
 )

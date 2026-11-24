@@ -13,11 +13,19 @@ from carelog.database.repositories.select_planned_visits import select_planned_v
 from carelog.database.repositories.select_service import select_service
 from carelog.database.repositories.select_visit import select_visit
 from carelog.database.repositories.select_week_visits import select_week_visits
+from carelog.database.repositories.update_visit_worker import update_visit_worker_record
 from carelog.database.repositories.update_visit import (
     ALLOWED_FIELDS,
     update_visit_record,
 )
 from carelog.services.trips import validate_distance_km
+from carelog.services.user_validation import (
+    get_active_user,
+    get_owner_filter,
+    is_admin,
+    resolve_owner_id,
+    validate_user_id,
+)
 from carelog.services.visit_notes import validate_note_content
 
 
@@ -59,8 +67,10 @@ def validate_description(description: str | None) -> str | None:
     if not description:
         return None
 
+    # CareLog's own upper limit, 65535 bytes. A PostgreSQL TEXT column
+    # itself has no practical size limit.
     if len(description.encode("utf-8")) > 65535:
-        raise ValueError("Description exceeds database limit")
+        raise ValueError("Description is too long")
 
     return description
 
@@ -199,6 +209,7 @@ def validate_completed_times(
 
 
 def add_planned_visit(
+    actor_user_id: int,
     client_id: int,
     service_id: int,
     planned_week: date | None = None,
@@ -208,8 +219,17 @@ def add_planned_visit(
     priority: int = 2,
     description: str | None = None,
     note: str | None = None,
-    price: Decimal | int | float | None = None
+    price: Decimal | int | float | None = None,
+    user_id: int | None = None
 ) -> int:
+
+    # Actor and worker validation. The worker is the actor unless an
+    # admin gives user_id. The users are checked in the database below.
+
+    validate_user_id(actor_user_id)
+
+    if user_id is not None:
+        validate_user_id(user_id)
 
     # Client and service ID validation
     # The service foreign key checks that the service exists.
@@ -305,6 +325,11 @@ def add_planned_visit(
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
+        # The users are checked first, then the client row is locked, in
+        # the same order in every visit function.
+        actor = get_active_user(cursor, actor_user_id)
+        worker_id = resolve_owner_id(cursor, actor, user_id)
+
         # New visits are not allowed for missing or archived clients.
         # The client row is locked until commit or rollback, so the client
         # cannot be archived between this check and the insert below.
@@ -328,6 +353,8 @@ def add_planned_visit(
 
         visit_id = insert_visit(
             cursor,
+            worker_id,
+            actor["id"],
             client_id,
             service_id,
             "planned",
@@ -343,7 +370,7 @@ def add_planned_visit(
         # The note is saved in the same transaction, so the visit and
         # the note are either both saved or both rolled back.
         if note is not None:
-            insert_visit_note(cursor, visit_id, note)
+            insert_visit_note(cursor, actor["id"], visit_id, note)
 
         connection.commit()
 
@@ -363,6 +390,7 @@ def add_planned_visit(
 
 
 def add_completed_visit(
+    actor_user_id: int,
     client_id: int,
     service_id: int,
     completed_date: date | None = None,
@@ -372,8 +400,16 @@ def add_completed_visit(
     description: str | None = None,
     distance_km: Decimal | int | float | None = None,
     price: Decimal | int | float | None = None,
-    note: str | None = None
+    note: str | None = None,
+    user_id: int | None = None
 ) -> int:
+
+    # Actor and worker validation, as in add_planned_visit()
+
+    validate_user_id(actor_user_id)
+
+    if user_id is not None:
+        validate_user_id(user_id)
 
     # Client and service ID validation
     # The service foreign key checks that the service exists.
@@ -418,6 +454,9 @@ def add_completed_visit(
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
+        actor = get_active_user(cursor, actor_user_id)
+        worker_id = resolve_owner_id(cursor, actor, user_id)
+
         # New visits are not allowed for missing or archived clients.
         # The client row is locked until commit or rollback, so the client
         # cannot be archived between this check and the insert below.
@@ -441,6 +480,8 @@ def add_completed_visit(
         # so the normal priority is stored.
         visit_id = insert_visit(
             cursor,
+            worker_id,
+            actor["id"],
             client_id,
             service_id,
             "completed",
@@ -456,7 +497,7 @@ def add_completed_visit(
 
         # The note is saved in the same transaction as the visit.
         if note is not None:
-            insert_visit_note(cursor, visit_id, note)
+            insert_visit_note(cursor, actor["id"], visit_id, note)
 
         connection.commit()
 
@@ -475,7 +516,15 @@ def add_completed_visit(
             connection.close()
 
 
-def get_visit(visit_id: int) -> dict | None:
+def get_visit(actor_user_id: int, visit_id: int) -> dict | None:
+
+    # A worker gets only their own visits. Another worker's visit gives
+    # None, as a missing visit does, so its existence is not revealed.
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Visit ID validation
 
@@ -486,7 +535,7 @@ def get_visit(visit_id: int) -> dict | None:
         raise ValueError("Visit ID must be positive")
 
     # Database operation
-    # DATETIME values are returned in UTC as they are stored.
+    # TIMESTAMP values are returned in UTC as they are stored.
 
     connection = None
     cursor = None
@@ -495,7 +544,10 @@ def get_visit(visit_id: int) -> dict | None:
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
-        visit = select_visit(cursor, visit_id)
+        actor = get_active_user(cursor, actor_user_id)
+        owner_user_id = get_owner_filter(actor, None)
+
+        visit = select_visit(cursor, visit_id, owner_user_id=owner_user_id)
 
         return visit
 
@@ -507,7 +559,22 @@ def get_visit(visit_id: int) -> dict | None:
             connection.close()
 
 
-def get_client_visits(client_id: int) -> list[dict]:
+def get_client_visits(
+    actor_user_id: int,
+    client_id: int,
+    user_id: int | None = None
+) -> list[dict]:
+
+    # A worker gets only their own visits of the client. An admin gets
+    # the visits of every worker, or of the worker user_id.
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
+
+    if user_id is not None:
+        validate_user_id(user_id)
 
     # Client ID validation
     # Visits of archived clients are returned too, so history is kept.
@@ -527,7 +594,10 @@ def get_client_visits(client_id: int) -> list[dict]:
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
-        visits = select_client_visits(cursor, client_id)
+        actor = get_active_user(cursor, actor_user_id)
+        owner_user_id = get_owner_filter(actor, user_id)
+
+        visits = select_client_visits(cursor, client_id, owner_user_id)
 
         return visits
 
@@ -539,10 +609,19 @@ def get_client_visits(client_id: int) -> list[dict]:
             connection.close()
 
 
-def get_planned_visits() -> list[dict]:
+def get_planned_visits(actor_user_id: int, user_id: int | None = None) -> list[dict]:
 
     # All planned visits, also the ones left in past weeks, so that
-    # they can be noticed later.
+    # they can be noticed later. A worker gets only their own visits, an
+    # admin the visits of every worker, or of the worker user_id.
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
+
+    if user_id is not None:
+        validate_user_id(user_id)
 
     connection = None
     cursor = None
@@ -551,7 +630,10 @@ def get_planned_visits() -> list[dict]:
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
-        visits = select_planned_visits(cursor)
+        actor = get_active_user(cursor, actor_user_id)
+        owner_user_id = get_owner_filter(actor, user_id)
+
+        visits = select_planned_visits(cursor, owner_user_id)
 
         return visits
 
@@ -563,7 +645,22 @@ def get_planned_visits() -> list[dict]:
             connection.close()
 
 
-def get_week_visits(week_start: date) -> list[dict]:
+def get_week_visits(
+    actor_user_id: int,
+    week_start: date,
+    user_id: int | None = None
+) -> list[dict]:
+
+    # A worker gets only their own visits, an admin the visits of every
+    # worker, or of the worker user_id.
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
+
+    if user_id is not None:
+        validate_user_id(user_id)
 
     # Week start validation
     # A datetime is also a date in Python, so type() is used to reject it.
@@ -608,12 +705,16 @@ def get_week_visits(week_start: date) -> list[dict]:
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
+        actor = get_active_user(cursor, actor_user_id)
+        owner_user_id = get_owner_filter(actor, user_id)
+
         visits = select_week_visits(
             cursor,
             week_start,
             next_week_start,
             week_start_utc,
-            next_week_start_utc
+            next_week_start_utc,
+            owner_user_id
         )
 
         return visits
@@ -706,7 +807,15 @@ def resolve_planned_schedule(visit: dict, changes: dict) -> tuple:
     return planned_week, planned_date, planned_at
 
 
-def update_visit(visit_id: int, changes: dict) -> bool:
+def update_visit(actor_user_id: int, visit_id: int, changes: dict) -> bool:
+
+    # A worker may update only their own visits. The worker of a visit is
+    # not one of ALLOWED_FIELDS: change_visit_worker() changes it.
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Visit ID validation
 
@@ -819,10 +928,19 @@ def update_visit(visit_id: int, changes: dict) -> bool:
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
+        actor = get_active_user(cursor, actor_user_id)
+        owner_user_id = get_owner_filter(actor, None)
+
         # The visit is read and locked before anything is calculated from
         # it, so the schedule is based on the current values and no other
-        # update can change the row before this transaction ends.
-        visit = select_visit(cursor, visit_id, for_update=True)
+        # update can change the row before this transaction ends. Another
+        # worker's visit is not found.
+        visit = select_visit(
+            cursor,
+            visit_id,
+            for_update=True,
+            owner_user_id=owner_user_id
+        )
 
         if visit is None:
             return False
@@ -846,6 +964,7 @@ def update_visit(visit_id: int, changes: dict) -> bool:
         # locked by this transaction, so locking it again does not wait.
         updated = update_visit_record(
             cursor,
+            actor["id"],
             visit_id,
             validated_changes
         )
@@ -868,6 +987,7 @@ def update_visit(visit_id: int, changes: dict) -> bool:
 
 
 def complete_visit(
+    actor_user_id: int,
     visit_id: int,
     completed_date: date | None = None,
     duration_minutes: int | None = None,
@@ -878,7 +998,13 @@ def complete_visit(
 
     # Marks a planned visit as completed. Values that are not given are
     # taken from the plan, so complete_visit(visit_id) is enough when the
-    # plan is detailed enough. The plan itself is never changed.
+    # plan is detailed enough. The plan and the worker are never changed.
+    # A worker may complete only their own visits.
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Visit ID validation
 
@@ -909,9 +1035,18 @@ def complete_visit(
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
+        actor = get_active_user(cursor, actor_user_id)
+        owner_user_id = get_owner_filter(actor, None)
+
         # The visit is read and locked before the default values are
         # taken from the plan, so they come from the current plan.
-        visit = select_visit(cursor, visit_id, for_update=True)
+        # Another worker's visit is not found.
+        visit = select_visit(
+            cursor,
+            visit_id,
+            for_update=True,
+            owner_user_id=owner_user_id
+        )
 
         if visit is None:
             return False
@@ -952,15 +1087,17 @@ def complete_visit(
             duration_minutes = visit["planned_duration_minutes"]
 
         # Default start time: the planned time, but only if it is on the
-        # completed day. A planned time is never moved to another day.
+        # completed day and has already passed. A planned time is never
+        # moved to another day. A planned time that has not come yet is
+        # not used, because the visit was done earlier than planned.
+
+        start_from_plan = False
 
         if started_at is None and planned_at is not None:
 
-            if planned_local_date == completed_date:
+            if planned_local_date == completed_date and planned_at <= now:
                 started_at = planned_at
-
-                if started_at > now:
-                    raise ValueError("Start time cannot be in the future")
+                start_from_plan = True
 
         # End time from the start time and the accepted duration, so the
         # times and the duration always match.
@@ -971,10 +1108,20 @@ def complete_visit(
                 ended_at = started_at + timedelta(minutes=duration_minutes)
 
                 if ended_at > now:
-                    raise ValueError("End time cannot be in the future")
+
+                    if start_from_plan:
+                        # The visit ended before the planned end time, so
+                        # the planned times are not the actual ones. Only
+                        # the day and the duration are saved.
+                        started_at = None
+                        ended_at = None
+
+                    else:
+                        raise ValueError("End time cannot be in the future")
 
         completed = complete_visit_record(
             cursor,
+            actor["id"],
             visit_id,
             completed_date,
             duration_minutes,
@@ -985,7 +1132,7 @@ def complete_visit(
         # The note is added only after a successful completion, in the
         # same transaction as the status change.
         if completed and note is not None:
-            insert_visit_note(cursor, visit_id, note)
+            insert_visit_note(cursor, actor["id"], visit_id, note)
 
         connection.commit()
 
@@ -1004,10 +1151,16 @@ def complete_visit(
             connection.close()
 
 
-def cancel_visit(visit_id: int) -> bool:
+def cancel_visit(actor_user_id: int, visit_id: int) -> bool:
 
     # A cancelled visit is not deleted. Only its status changes, so it
-    # stays in the client's history.
+    # stays in the client's history. A worker may cancel only their own
+    # visits.
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Visit ID validation
 
@@ -1018,8 +1171,8 @@ def cancel_visit(visit_id: int) -> bool:
         raise ValueError("Visit ID must be positive")
 
     # Database operation
-    # The record function locks the row, checks that the visit is
-    # planned and changes the status in the same transaction.
+    # The record function locks the row, checks the worker and that the
+    # visit is planned, and changes the status in the same transaction.
 
     connection = None
     cursor = None
@@ -1028,14 +1181,95 @@ def cancel_visit(visit_id: int) -> bool:
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
+        actor = get_active_user(cursor, actor_user_id)
+        owner_user_id = get_owner_filter(actor, None)
+
         cancelled = cancel_visit_record(
             cursor,
-            visit_id
+            actor["id"],
+            visit_id,
+            owner_user_id
         )
 
         connection.commit()
 
         return cancelled
+
+    except Exception:
+        if connection is not None:
+            connection.rollback()
+        raise
+
+    finally:
+        if cursor is not None:
+            cursor.close()
+
+        if connection is not None:
+            connection.close()
+
+
+def change_visit_worker(actor_user_id: int, visit_id: int, user_id: int) -> bool:
+
+    # Gives a planned visit to another worker. Only an admin may do this,
+    # and only while the visit is planned: the worker of a completed or
+    # cancelled visit never changes. The role is read from the database.
+    # The database itself cannot check the role, because the application
+    # uses one shared database account.
+    #
+    # The creator of the visit and the user_id of its expenses do not
+    # change. Returns False if the visit does not exist.
+
+    # Actor, visit and worker ID validation
+
+    validate_user_id(actor_user_id)
+
+    if type(visit_id) is not int:
+        raise ValueError("Visit ID must be an integer")
+
+    if visit_id <= 0:
+        raise ValueError("Visit ID must be positive")
+
+    validate_user_id(user_id)
+
+    # Database operation
+
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_postgres_connection()
+        cursor = connection.cursor()
+
+        # The users are checked first, then the visit row is locked, as
+        # in the other visit functions.
+        actor = get_active_user(cursor, actor_user_id)
+
+        if not is_admin(actor):
+            raise PermissionError("Only an admin can change the worker of a visit")
+
+        worker_id = resolve_owner_id(cursor, actor, user_id)
+
+        # The status is checked from the locked row. A completion that
+        # started earlier has to finish first, and a completion that
+        # starts later waits until this transaction ends.
+        visit = select_visit(cursor, visit_id, for_update=True)
+
+        if visit is None:
+            return False
+
+        if visit["status"] != "planned":
+            raise ValueError("Only the worker of a planned visit can be changed")
+
+        changed = update_visit_worker_record(
+            cursor,
+            actor["id"],
+            visit_id,
+            worker_id
+        )
+
+        connection.commit()
+
+        return changed
 
     except Exception:
         if connection is not None:

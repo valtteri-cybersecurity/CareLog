@@ -8,13 +8,20 @@ from carelog.database.repositories.update_service import (
     ALLOWED_FIELDS,
     update_service_record,
 )
+from carelog.services.user_validation import get_active_user, validate_user_id
 
 
 def add_service(
+    actor_user_id: int,
     name: str,
     description: str | None = None,
     default_hourly_rate: Decimal | int | float | None = None
 ) -> int:
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Name validation
 
@@ -41,8 +48,10 @@ def add_service(
         if not description:
             description = None
 
+        # CareLog's own upper limit, 65535 bytes. A PostgreSQL TEXT
+        # column itself has no practical size limit.
         elif len(description.encode("utf-8")) > 65535:
-            raise ValueError("Description exceeds database limit")
+            raise ValueError("Description is too long")
 
     # Hourly rate validation
 
@@ -77,8 +86,11 @@ def add_service(
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
+        get_active_user(cursor, actor_user_id)
+
         service_id = insert_service(
             cursor,
+            actor_user_id,
             name,
             description,
             default_hourly_rate
@@ -155,7 +167,12 @@ def get_services() -> list[dict]:
 
 
 
-def update_service(service_id: int, changes: dict) -> bool:
+def update_service(actor_user_id: int, service_id: int, changes: dict) -> bool:
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Service ID validation
 
@@ -212,8 +229,9 @@ def update_service(service_id: int, changes: dict) -> bool:
                 if not value:
                     value = None
 
+                # CareLog's own upper limit, as in add_service()
                 elif len(value.encode("utf-8")) > 65535:
-                    raise ValueError("Description exceeds database limit")
+                    raise ValueError("Description is too long")
 
             validated_changes[field] = value
             continue
@@ -256,8 +274,11 @@ def update_service(service_id: int, changes: dict) -> bool:
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
+        get_active_user(cursor, actor_user_id)
+
         updated = update_service_record(
             cursor,
+            actor_user_id,
             service_id,
             validated_changes
         )
