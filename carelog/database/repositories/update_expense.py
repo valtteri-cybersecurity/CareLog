@@ -10,21 +10,33 @@ ALLOWED_FIELDS = (
 )
 
 
-def select_expense_for_update(cursor: Cursor, expense_id: int) -> dict | None:
+def select_expense_for_update(
+    cursor: Cursor,
+    expense_id: int,
+    owner_user_id: int | None = None
+) -> dict | None:
 
     # Reads the expense and locks the row until the transaction ends,
     # so the service validates the changes against current data and no
-    # other update can change the row in between.
+    # other update can change the row in between. With owner_user_id
+    # another worker's expense is treated as missing.
 
-    cursor.execute(
-        """
-        SELECT id, visit_id, expense_date, amount, category, description
+    sql = """
+        SELECT id, visit_id, expense_date, amount, category, description,
+               user_id
         FROM expenses
         WHERE id = %s
-        FOR UPDATE
-        """,
-        (expense_id,)
-    )
+    """
+
+    values = [expense_id]
+
+    if owner_user_id is not None:
+        sql += " AND user_id = %s"
+        values.append(owner_user_id)
+
+    sql += " FOR UPDATE"
+
+    cursor.execute(sql, tuple(values))
 
     result = cursor.fetchone()
 
@@ -42,6 +54,7 @@ def select_expense_for_update(cursor: Cursor, expense_id: int) -> dict | None:
 
 def update_expense_record(
     cursor: Cursor,
+    updated_by_user_id: int,
     expense_id: int,
     changes: dict
 ) -> bool:
@@ -77,6 +90,12 @@ def update_expense_record(
 
     if not updates:
         raise ValueError("No fields to update")
+
+    # The latest editor is not one of ALLOWED_FIELDS: it always comes
+    # from the user who performs the update. user_id and
+    # created_by_user_id are never changed here.
+    updates.append("updated_by_user_id = %s")
+    values.append(updated_by_user_id)
 
     sql = "UPDATE expenses SET "
     sql += ", ".join(updates)

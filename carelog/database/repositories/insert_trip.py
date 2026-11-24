@@ -5,6 +5,7 @@ from psycopg import Cursor
 
 def insert_trip(
     cursor: Cursor,
+    created_by_user_id: int,
     client_id: int,
     start_location: str,
     destination: str,
@@ -16,15 +17,16 @@ def insert_trip(
             client_id,
             start_location,
             destination,
-            distance_km
+            distance_km,
+            created_by_user_id
         )
-        VALUES (%s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s)
         RETURNING id
     """
 
     cursor.execute(
         sql,
-        (client_id, start_location, destination, distance_km)
+        (client_id, start_location, destination, distance_km, created_by_user_id)
     )
 
     # RETURNING id gives the id that PostgreSQL created for the row.

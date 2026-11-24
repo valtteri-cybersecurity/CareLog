@@ -5,6 +5,7 @@ from psycopg import Cursor
 
 def complete_visit_record(
     cursor: Cursor,
+    updated_by_user_id: int,
     visit_id: int,
     completed_date: date,
     duration_minutes: int | None,
@@ -33,7 +34,8 @@ def complete_visit_record(
     if result[0] != "planned":
         raise ValueError("Only planned visits can be completed")
 
-    # Only the completed fields change. The plan stays as it was.
+    # Only the completed fields and the latest editor change. The plan
+    # and the worker stay as they were.
 
     sql = """
         UPDATE visits
@@ -41,14 +43,15 @@ def complete_visit_record(
             completed_date = %s,
             duration_minutes = %s,
             started_at = %s,
-            ended_at = %s
+            ended_at = %s,
+            updated_by_user_id = %s
         WHERE id = %s
         AND status = 'planned'
     """
 
     cursor.execute(
         sql,
-        (completed_date, duration_minutes, started_at, ended_at, visit_id)
+        (completed_date, duration_minutes, started_at, ended_at, updated_by_user_id, visit_id)
     )
 
     if cursor.rowcount != 1:

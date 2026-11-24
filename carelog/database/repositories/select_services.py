@@ -4,7 +4,8 @@ from psycopg import Cursor
 def select_services(cursor: Cursor) -> list[dict]:
 
     sql = """
-        SELECT id, name, description, default_hourly_rate
+        SELECT id, name, description, default_hourly_rate,
+               created_by_user_id, updated_by_user_id, updated_at
         FROM services
         ORDER BY name, id
     """

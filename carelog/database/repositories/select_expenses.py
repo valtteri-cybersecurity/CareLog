@@ -8,7 +8,8 @@ def select_expenses(
     start_date: date | None = None,
     end_date: date | None = None,
     category: str | None = None,
-    client_id: int | None = None
+    client_id: int | None = None,
+    owner_user_id: int | None = None
 ) -> list[dict]:
 
     # Every filter that is given is added as a fixed SQL condition, and
@@ -22,7 +23,11 @@ def select_expenses(
             expenses.expense_date,
             expenses.amount,
             expenses.category,
-            expenses.description
+            expenses.description,
+            expenses.user_id,
+            expenses.created_by_user_id,
+            expenses.updated_by_user_id,
+            expenses.updated_at
         FROM expenses
     """
 
@@ -35,6 +40,11 @@ def select_expenses(
         sql += " JOIN visits ON visits.id = expenses.visit_id"
         conditions.append("visits.client_id = %s")
         values.append(client_id)
+
+    # The owner of the expense, not the worker of the visit
+    if owner_user_id is not None:
+        conditions.append("expenses.user_id = %s")
+        values.append(owner_user_id)
 
     # Both limit days are included.
     if start_date is not None:

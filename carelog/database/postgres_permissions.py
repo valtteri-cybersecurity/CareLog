@@ -7,7 +7,10 @@ from carelog.database.postgres_connection import get_postgres_connection
 MIGRATION_USER = "carelog_migrator"
 
 # Table privileges of the application account. Grant only what the
-# repositories need.
+# repositories need. The user columns of v014 need no new privileges: a
+# foreign key to users is checked with the rights of the table owner.
+# The application has no UPDATE on users, so it cannot lock user rows
+# with SELECT ... FOR UPDATE or FOR SHARE.
 APP_TABLE_PRIVILEGES = {
     "clients": ("SELECT", "INSERT", "UPDATE"),
     "services": ("SELECT", "INSERT", "UPDATE"),
@@ -117,10 +120,13 @@ def check_app_permissions(cursor, app_user):
             "Manual review required"
         )
 
-    # The owner of a table, schema or database can always change it.
+    # The owner of a table, function, schema or database can always change
+    # it. The owner of a trigger function could, for example, replace the
+    # function that keeps created_by_user_id unchanged.
     cursor.execute("""
         SELECT
             (SELECT COUNT(*) FROM pg_class WHERE relowner = r.oid),
+            (SELECT COUNT(*) FROM pg_proc WHERE proowner = r.oid),
             (SELECT COUNT(*) FROM pg_namespace WHERE nspowner = r.oid),
             (SELECT COUNT(*) FROM pg_database
              WHERE datname = current_database() AND datdba = r.oid)

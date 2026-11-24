@@ -6,6 +6,8 @@ from psycopg import Cursor
 
 def insert_visit(
     cursor: Cursor,
+    user_id: int,
+    created_by_user_id: int,
     client_id: int,
     service_id: int,
     status: str,
@@ -39,9 +41,11 @@ def insert_visit(
             ended_at,
             duration_minutes,
             distance_km,
-            price
+            price,
+            user_id,
+            created_by_user_id
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
     """
 
@@ -62,7 +66,9 @@ def insert_visit(
             ended_at,
             duration_minutes,
             distance_km,
-            price
+            price,
+            user_id,
+            created_by_user_id
         )
     )
 

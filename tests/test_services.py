@@ -8,56 +8,58 @@ from carelog.services.services import (
     get_services,
     update_service,
 )
+from tests.postgres_helpers import fake_active_user
 
 
 def test_add_service_rejects_empty_name():
     with pytest.raises(ValueError):
-        add_service("")
+        add_service(1, "")
 
 
 def test_add_service_rejects_spaces_name():
     with pytest.raises(ValueError):
-        add_service("   ")
+        add_service(1, "   ")
 
 
 def test_add_service_rejects_invalid_name_type():
     with pytest.raises(ValueError):
-        add_service(123)
+        add_service(1, 123)
 
 
 def test_add_service_rejects_long_name():
     with pytest.raises(ValueError):
-        add_service("A" * 151)
+        add_service(1, "A" * 151)
 
 
 def test_add_service_rejects_invalid_description():
     with pytest.raises(ValueError):
-        add_service("Kaupassa käynti", description=123)
+        add_service(1, "Kaupassa käynti", description=123)
 
 
 def test_add_service_rejects_negative_rate():
     with pytest.raises(ValueError):
-        add_service("Kaupassa käynti", default_hourly_rate=-10)
+        add_service(1, "Kaupassa käynti", default_hourly_rate=-10)
 
 
 def test_add_service_rejects_boolean_rate():
     with pytest.raises(ValueError):
-        add_service("Kaupassa käynti", default_hourly_rate=True)
+        add_service(1, "Kaupassa käynti", default_hourly_rate=True)
 
 
 def test_add_service_rejects_infinite_rate():
     with pytest.raises(ValueError):
-        add_service("Kaupassa käynti", default_hourly_rate=float("inf"))
+        add_service(1, "Kaupassa käynti", default_hourly_rate=float("inf"))
 
 
 def test_add_service_rejects_nan_rate():
     with pytest.raises(ValueError):
-        add_service("Kaupassa käynti", default_hourly_rate=float("nan"))
+        add_service(1, "Kaupassa käynti", default_hourly_rate=float("nan"))
 
 
 def test_add_service_rejects_too_many_decimals():
     with pytest.raises(ValueError):
         add_service(
+            1,
             "Kaupassa käynti",
             default_hourly_rate=Decimal("35.555")
         )
@@ -66,6 +68,7 @@ def test_add_service_rejects_too_many_decimals():
 def test_add_service_rejects_rate_over_limit():
     with pytest.raises(ValueError):
         add_service(
+            1,
             "Kaupassa käynti",
             default_hourly_rate=Decimal("100000000.00")
         )
@@ -73,6 +76,7 @@ def test_add_service_rejects_rate_over_limit():
 
 def test_add_service_saves_to_database(
     postgres_cursor_with_clients_and_services,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -90,6 +94,7 @@ def test_add_service_saves_to_database(
     )
 
     service_id = add_service(
+        user_ids["worker"],
         "  Kaupassa käynti  ",
         "  Asiointiapu  ",
         Decimal("35.50")
@@ -115,6 +120,7 @@ def test_add_service_saves_to_database(
 
 def test_add_service_saves_null_values(
     postgres_cursor_with_clients_and_services,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -131,7 +137,7 @@ def test_add_service_saves_null_values(
         get_test_connection
     )
 
-    service_id = add_service("Ulkoilu")
+    service_id = add_service(user_ids["worker"], "Ulkoilu")
 
     cursor.execute(
         """
@@ -147,6 +153,7 @@ def test_add_service_saves_null_values(
 
 def test_add_service_rolls_back_on_error(
     postgres_cursor_with_clients_and_services,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -160,13 +167,14 @@ def test_add_service_rolls_back_on_error(
 
     def insert_then_fail(
         cursor,
+        created_by_user_id,
         name,
         description,
         default_hourly_rate
     ):
         cursor.execute(
-            "INSERT INTO services (name) VALUES (%s)",
-            (name,)
+            "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s)",
+            (name, created_by_user_id)
         )
 
         raise RuntimeError("Simulated insert failure")
@@ -182,7 +190,7 @@ def test_add_service_rolls_back_on_error(
     )
 
     with pytest.raises(RuntimeError):
-        add_service("Ulkoilu")
+        add_service(user_ids["worker"], "Ulkoilu")
 
     cursor.execute(
         "SELECT COUNT(*) FROM services WHERE name = %s",
@@ -223,6 +231,7 @@ def test_get_service_rejects_negative_id():
 
 def test_get_service_returns_service(
     postgres_cursor_with_clients_and_services,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -244,12 +253,12 @@ def test_get_service_returns_service(
         INSERT INTO services (
             name,
             description,
-            default_hourly_rate
+            default_hourly_rate, created_by_user_id
         )
-        VALUES (%s, %s, %s)
+        VALUES (%s, %s, %s, %s)
         RETURNING id
         """,
-        ("Kaupassa käynti", "Asiointiapu", Decimal("35.50"))
+        ("Kaupassa käynti", "Asiointiapu", Decimal("35.50"), user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
@@ -360,6 +369,7 @@ def test_get_services_returns_empty_list(
 
 def test_get_services_returns_sorted_services(
     postgres_cursor_with_clients_and_services,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -381,11 +391,11 @@ def test_get_services_returns_sorted_services(
         INSERT INTO services (
             name,
             description,
-            default_hourly_rate
+            default_hourly_rate, created_by_user_id
         )
-        VALUES (%s, %s, %s)
+        VALUES (%s, %s, %s, %s)
         """,
-        ("Ulkoilu", None, None)
+        ("Ulkoilu", None, None, user_ids["worker"])
     )
 
     cursor.execute(
@@ -393,11 +403,11 @@ def test_get_services_returns_sorted_services(
         INSERT INTO services (
             name,
             description,
-            default_hourly_rate
+            default_hourly_rate, created_by_user_id
         )
-        VALUES (%s, %s, %s)
+        VALUES (%s, %s, %s, %s)
         """,
-        ("Apteekkiasiointi", "Lääkkeiden nouto", Decimal("35.00"))
+        ("Apteekkiasiointi", "Lääkkeiden nouto", Decimal("35.00"), user_ids["worker"])
     )
 
     cursor.execute(
@@ -405,11 +415,11 @@ def test_get_services_returns_sorted_services(
         INSERT INTO services (
             name,
             description,
-            default_hourly_rate
+            default_hourly_rate, created_by_user_id
         )
-        VALUES (%s, %s, %s)
+        VALUES (%s, %s, %s, %s)
         """,
-        ("Kaupassa käynti", "Asiointiapu", Decimal("40.00"))
+        ("Kaupassa käynti", "Asiointiapu", Decimal("40.00"), user_ids["worker"])
     )
 
     services = get_services()
@@ -479,41 +489,42 @@ def test_get_services_closes_connection_on_error(monkeypatch):
 
 def test_update_service_rejects_invalid_id():
     with pytest.raises(ValueError):
-        update_service("123", {"name": "Ulkoilu"})
+        update_service(1, "123", {"name": "Ulkoilu"})
 
 
 def test_update_service_rejects_boolean_id():
     with pytest.raises(ValueError):
-        update_service(True, {"name": "Ulkoilu"})
+        update_service(1, True, {"name": "Ulkoilu"})
 
 
 def test_update_service_rejects_empty_changes():
     with pytest.raises(ValueError):
-        update_service(1, {})
+        update_service(1, 1, {})
 
 
 def test_update_service_rejects_invalid_field():
     with pytest.raises(ValueError):
-        update_service(1, {"id": 5})
+        update_service(1, 1, {"id": 5})
 
 
 def test_update_service_rejects_empty_name():
     with pytest.raises(ValueError):
-        update_service(1, {"name": "   "})
+        update_service(1, 1, {"name": "   "})
 
 
 def test_update_service_rejects_invalid_description():
     with pytest.raises(ValueError):
-        update_service(1, {"description": 123})
+        update_service(1, 1, {"description": 123})
 
 
 def test_update_service_rejects_negative_rate():
     with pytest.raises(ValueError):
-        update_service(1, {"default_hourly_rate": -10})
+        update_service(1, 1, {"default_hourly_rate": -10})
 
 
 def test_update_service_changes_name_and_rate(
     postgres_cursor_with_clients_and_services,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -535,17 +546,18 @@ def test_update_service_changes_name_and_rate(
         INSERT INTO services (
             name,
             description,
-            default_hourly_rate
+            default_hourly_rate, created_by_user_id
         )
-        VALUES (%s, %s, %s)
+        VALUES (%s, %s, %s, %s)
         RETURNING id
         """,
-        ("Kaupassa käynti", "Asiointiapu", Decimal("35.50"))
+        ("Kaupassa käynti", "Asiointiapu", Decimal("35.50"), user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     updated = update_service(
+        user_ids["worker"],
         service_id,
         {
             "name": "  Apteekkiasiointi  ",
@@ -574,6 +586,7 @@ def test_update_service_changes_name_and_rate(
 
 def test_update_service_clears_description_and_rate(
     postgres_cursor_with_clients_and_services,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -595,17 +608,18 @@ def test_update_service_clears_description_and_rate(
         INSERT INTO services (
             name,
             description,
-            default_hourly_rate
+            default_hourly_rate, created_by_user_id
         )
-        VALUES (%s, %s, %s)
+        VALUES (%s, %s, %s, %s)
         RETURNING id
         """,
-        ("Kaupassa käynti", "Asiointiapu", Decimal("35.50"))
+        ("Kaupassa käynti", "Asiointiapu", Decimal("35.50"), user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     updated = update_service(
+        user_ids["worker"],
         service_id,
         {
             "description": None,
@@ -629,6 +643,7 @@ def test_update_service_clears_description_and_rate(
 
 def test_update_service_returns_false_if_not_found(
     postgres_cursor_with_clients_and_services,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -646,6 +661,7 @@ def test_update_service_returns_false_if_not_found(
     )
 
     updated = update_service(
+        user_ids["worker"],
         999999,
         {"name": "Ulkoilu"}
     )
@@ -655,6 +671,7 @@ def test_update_service_returns_false_if_not_found(
 
 def test_update_service_rolls_back_on_error(
     postgres_cursor_with_clients_and_services,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -666,7 +683,7 @@ def test_update_service_rolls_back_on_error(
     def get_test_connection():
         return connect_to_test_postgres(database=database)
 
-    def update_then_fail(cursor, service_id, changes):
+    def update_then_fail(cursor, updated_by_user_id, service_id, changes):
         cursor.execute(
             """
             UPDATE services
@@ -689,14 +706,14 @@ def test_update_service_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO services (name) VALUES (%s) RETURNING id",
-        ("Kaupassa käynti",)
+        "INSERT INTO services (name, created_by_user_id) VALUES (%s, %s) RETURNING id",
+        ("Kaupassa käynti", user_ids["worker"])
     )
 
     service_id = cursor.fetchone()[0]
 
     with pytest.raises(RuntimeError, match="Simulated update failure"):
-        update_service(service_id, {"name": "Ulkoilu"})
+        update_service(user_ids["worker"], service_id, {"name": "Ulkoilu"})
 
     cursor.execute(
         "SELECT name FROM services WHERE id = %s",
@@ -734,7 +751,10 @@ def test_update_service_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
-    def update_then_fail(cursor, service_id, changes):
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.services.get_active_user", fake_active_user)
+
+    def update_then_fail(cursor, updated_by_user_id, service_id, changes):
         raise RuntimeError("Simulated update failure")
 
     monkeypatch.setattr(
@@ -748,7 +768,92 @@ def test_update_service_closes_connection_on_error(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Simulated update failure"):
-        update_service(1, {"name": "Ulkoilu"})
+        update_service(1, 1, {"name": "Ulkoilu"})
 
     assert connection.test_cursor.closed is True
     assert connection.closed is True
+
+
+# USER TRACKING TESTS
+
+
+def test_service_writes_reject_invalid_actor_id():
+    # The user check itself is tested in test_user_validation.py
+    for actor_user_id in (None, True, "1", 0):
+        with pytest.raises(ValueError):
+            add_service(actor_user_id, "Ulkoilu")
+
+        with pytest.raises(ValueError):
+            update_service(actor_user_id, 1, {"name": "Ulkoilu"})
+
+
+def test_service_saves_creator_and_latest_editor(
+    postgres_cursor_with_clients_and_services,
+    user_ids,
+    connect_to_test_postgres,
+    monkeypatch
+):
+    cursor = postgres_cursor_with_clients_and_services
+
+    cursor.execute("SELECT current_database()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_postgres(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.services.get_postgres_connection",
+        get_test_connection
+    )
+
+    worker_id = user_ids["worker"]
+    admin_id = user_ids["admin"]
+
+    service_id = add_service(worker_id, "Ulkoilu")
+
+    service = get_service(service_id)
+    assert service["created_by_user_id"] == worker_id
+    assert service["updated_by_user_id"] is None
+    created_updated_at = service["updated_at"]
+
+    assert update_service(admin_id, service_id, {"default_hourly_rate": Decimal("32.00")})
+
+    # get_services() returns the same user columns as get_service()
+    service = get_services()[0]
+    assert service["created_by_user_id"] == worker_id
+    assert service["updated_by_user_id"] == admin_id
+    assert service["updated_at"] >= created_updated_at
+
+
+def test_service_writes_reject_missing_and_inactive_users(
+    postgres_cursor_with_clients_and_services,
+    user_ids,
+    connect_to_test_postgres,
+    monkeypatch
+):
+    cursor = postgres_cursor_with_clients_and_services
+
+    cursor.execute("SELECT current_database()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_postgres(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.services.get_postgres_connection",
+        get_test_connection
+    )
+
+    service_id = add_service(user_ids["worker"], "Ulkoilu")
+    missing_id = user_ids["admin"] + user_ids["worker"] + 1000
+
+    with pytest.raises(ValueError, match="User not found"):
+        add_service(missing_id, "Kauppa-asiointi")
+
+    with pytest.raises(PermissionError):
+        update_service(user_ids["inactive"], service_id, {"name": "Kauppa-asiointi"})
+
+    # Nothing was saved
+    cursor.execute("SELECT id, name, updated_by_user_id FROM services")
+
+    assert cursor.fetchall() == [(service_id, "Ulkoilu", None)]

@@ -10,6 +10,7 @@ from carelog.database.repositories.select_client import select_client
 from carelog.database.repositories.select_clients import select_clients
 from carelog.database.repositories.archive_client import archive_client_record
 from carelog.services.trips import validate_distance_km
+from carelog.services.user_validation import get_active_user, validate_user_id
 
 
 def validate_postal_code(postal_code: str | None) -> str | None:
@@ -34,6 +35,7 @@ def validate_postal_code(postal_code: str | None) -> str | None:
 
 
 def add_client(
+        actor_user_id: int,
         first_name: str,
         last_name: str,
         phone: str | None = None,
@@ -43,7 +45,11 @@ def add_client(
         city: str | None = None,
         distance_from_home_km: Decimal | float | int | None = None
     ) -> int:
-    
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Name validation
 
@@ -160,7 +166,9 @@ def add_client(
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
-        client_id = insert_client(cursor, first_name, last_name, phone, email, street_address, postal_code, city, distance_from_home_km)
+        get_active_user(cursor, actor_user_id)
+
+        client_id = insert_client(cursor, actor_user_id, first_name, last_name, phone, email, street_address, postal_code, city, distance_from_home_km)
         connection.commit()
         return client_id
 
@@ -227,7 +235,12 @@ def get_clients() -> list[dict]:
 
 
 
-def update_client(client_id: int, changes: dict) -> bool:
+def update_client(actor_user_id: int, client_id: int, changes: dict) -> bool:
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Client ID validation
 
@@ -323,8 +336,11 @@ def update_client(client_id: int, changes: dict) -> bool:
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
+        get_active_user(cursor, actor_user_id)
+
         updated = update_client_record(
             cursor,
+            actor_user_id,
             client_id,
             validated_changes
         )
@@ -347,7 +363,12 @@ def update_client(client_id: int, changes: dict) -> bool:
 
 
 
-def archive_client(client_id: int) -> bool:
+def archive_client(actor_user_id: int, client_id: int) -> bool:
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Client ID validation
 
@@ -366,8 +387,11 @@ def archive_client(client_id: int) -> bool:
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
+        get_active_user(cursor, actor_user_id)
+
         archived = archive_client_record(
             cursor,
+            actor_user_id,
             client_id
         )
 

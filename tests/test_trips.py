@@ -13,6 +13,7 @@ from carelog.services.trips import (
     update_trip,
     validate_trip_leg,
 )
+from tests.postgres_helpers import fake_active_user
 
 
 # ADD TRIP TESTS
@@ -21,7 +22,7 @@ from carelog.services.trips import (
 def test_add_trip_rejects_invalid_client_id():
     for client_id in ("1", None, True, 0, -1):
         with pytest.raises(ValueError):
-            add_trip(client_id, "Koti", "Kauppa")
+            add_trip(1, client_id, "Koti", "Kauppa")
 
 
 def test_add_trip_rejects_invalid_locations():
@@ -36,7 +37,7 @@ def test_add_trip_rejects_invalid_locations():
 
     for start_location, destination in invalid_locations:
         with pytest.raises(ValueError):
-            add_trip(1, start_location, destination)
+            add_trip(1, 1, start_location, destination)
 
 
 def test_add_trip_rejects_invalid_distance():
@@ -52,11 +53,12 @@ def test_add_trip_rejects_invalid_distance():
 
     for distance_km in invalid_distances:
         with pytest.raises(ValueError):
-            add_trip(1, "Koti", "Kauppa", distance_km)
+            add_trip(1, 1, "Koti", "Kauppa", distance_km)
 
 
 def test_add_trip_saves_to_database(
     postgres_cursor_with_trips,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -74,13 +76,14 @@ def test_add_trip_saves_to_database(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Testi", "Asiakas")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Testi", "Asiakas", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     trip_id = add_trip(
+        user_ids["worker"],
         client_id,
         "  Koti  ",
         "  Kauppa  ",
@@ -106,6 +109,7 @@ def test_add_trip_saves_to_database(
 
 def test_add_trip_saves_null_and_zero_distance(
     postgres_cursor_with_trips,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -123,14 +127,14 @@ def test_add_trip_saves_null_and_zero_distance(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Testi", "Asiakas")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Testi", "Asiakas", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
-    trip_without_distance = add_trip(client_id, "Koti", "Apteekki")
-    trip_with_zero_distance = add_trip(client_id, "Koti", "Naapuri", 0)
+    trip_without_distance = add_trip(user_ids["worker"], client_id, "Koti", "Apteekki")
+    trip_with_zero_distance = add_trip(user_ids["worker"], client_id, "Koti", "Naapuri", 0)
 
     cursor.execute(
         "SELECT distance_km FROM trips WHERE id = %s",
@@ -149,6 +153,7 @@ def test_add_trip_saves_null_and_zero_distance(
 
 def test_add_trip_rejects_missing_client(
     postgres_cursor_with_trips,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -167,7 +172,7 @@ def test_add_trip_rejects_missing_client(
 
     # The foreign key must reject a client that does not exist
     with pytest.raises(psycopg.IntegrityError):
-        add_trip(999999, "Koti", "Kauppa")
+        add_trip(user_ids["worker"], 999999, "Koti", "Kauppa")
 
     cursor.execute("SELECT COUNT(*) FROM trips")
 
@@ -176,6 +181,7 @@ def test_add_trip_rejects_missing_client(
 
 def test_add_trip_rolls_back_on_error(
     postgres_cursor_with_trips,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -189,6 +195,7 @@ def test_add_trip_rolls_back_on_error(
 
     def insert_then_fail(
         cursor,
+        created_by_user_id,
         client_id,
         start_location,
         destination,
@@ -196,10 +203,10 @@ def test_add_trip_rolls_back_on_error(
     ):
         cursor.execute(
             """
-            INSERT INTO trips (client_id, start_location, destination)
-            VALUES (%s, %s, %s)
+            INSERT INTO trips (client_id, start_location, destination, created_by_user_id)
+            VALUES (%s, %s, %s, %s)
             """,
-            (client_id, start_location, destination)
+            (client_id, start_location, destination, created_by_user_id)
         )
 
         raise RuntimeError("Simulated insert failure")
@@ -215,14 +222,14 @@ def test_add_trip_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Testi", "Asiakas")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Testi", "Asiakas", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     with pytest.raises(RuntimeError, match="Simulated insert failure"):
-        add_trip(client_id, "Koti", "Kauppa")
+        add_trip(user_ids["worker"], client_id, "Koti", "Kauppa")
 
     cursor.execute("SELECT COUNT(*) FROM trips")
 
@@ -257,8 +264,12 @@ def test_add_trip_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.trips.get_active_user", fake_active_user)
+
     def insert_then_fail(
         cursor,
+        created_by_user_id,
         client_id,
         start_location,
         destination,
@@ -277,7 +288,7 @@ def test_add_trip_closes_connection_on_error(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Simulated insert failure"):
-        add_trip(1, "Koti", "Kauppa")
+        add_trip(1, 1, "Koti", "Kauppa")
 
     assert connection.test_cursor.closed is True
     assert connection.closed is True
@@ -299,6 +310,7 @@ def test_get_trip_rejects_boolean_id():
 
 def test_get_trip_returns_trip(
     postgres_cursor_with_trips,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -316,24 +328,27 @@ def test_get_trip_returns_trip(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Testi", "Asiakas")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Testi", "Asiakas", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
-        INSERT INTO trips (client_id, start_location, destination, distance_km)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO trips (client_id, start_location, destination, distance_km, created_by_user_id)
+        VALUES (%s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (client_id, "Koti", "Kauppa", Decimal("12.50"))
+        (client_id, "Koti", "Kauppa", Decimal("12.50"), user_ids["worker"])
     )
 
     trip_id = cursor.fetchone()[0]
 
     trip = get_trip(trip_id)
+
+    # updated_at is set by the database
+    assert trip.pop("updated_at") is not None
 
     assert trip == {
         "id": trip_id,
@@ -341,6 +356,8 @@ def test_get_trip_returns_trip(
         "start_location": "Koti",
         "destination": "Kauppa",
         "distance_km": Decimal("12.50"),
+        "created_by_user_id": user_ids["worker"],
+        "updated_by_user_id": None,
     }
 
 
@@ -423,6 +440,7 @@ def test_get_trips_rejects_invalid_client_id():
 
 def test_get_trips_returns_empty_list(
     postgres_cursor_with_trips,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -440,8 +458,8 @@ def test_get_trips_returns_empty_list(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Testi", "Asiakas")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Testi", "Asiakas", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
@@ -453,6 +471,7 @@ def test_get_trips_returns_empty_list(
 
 def test_get_trips_returns_sorted_trips(
     postgres_cursor_with_trips,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -470,8 +489,8 @@ def test_get_trips_returns_sorted_trips(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Testi", "Asiakas")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Testi", "Asiakas", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
@@ -485,10 +504,10 @@ def test_get_trips_returns_sorted_trips(
     for start_location, destination, distance_km in trip_rows:
         cursor.execute(
             """
-            INSERT INTO trips (client_id, start_location, destination, distance_km)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO trips (client_id, start_location, destination, distance_km, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s)
             """,
-            (client_id, start_location, destination, distance_km)
+            (client_id, start_location, destination, distance_km, user_ids["worker"])
         )
 
     trips = get_trips(client_id)
@@ -511,6 +530,7 @@ def test_get_trips_returns_sorted_trips(
 
 def test_get_trips_excludes_other_clients_trips(
     postgres_cursor_with_trips,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -528,33 +548,33 @@ def test_get_trips_excludes_other_clients_trips(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Testi", "Asiakas")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Testi", "Asiakas", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Toinen", "Asiakas")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Toinen", "Asiakas", user_ids["worker"])
     )
 
     other_client_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
-        INSERT INTO trips (client_id, start_location, destination)
-        VALUES (%s, %s, %s)
+        INSERT INTO trips (client_id, start_location, destination, created_by_user_id)
+        VALUES (%s, %s, %s, %s)
         """,
-        (client_id, "Koti", "Kauppa")
+        (client_id, "Koti", "Kauppa", user_ids["worker"])
     )
 
     cursor.execute(
         """
-        INSERT INTO trips (client_id, start_location, destination)
-        VALUES (%s, %s, %s)
+        INSERT INTO trips (client_id, start_location, destination, created_by_user_id)
+        VALUES (%s, %s, %s, %s)
         """,
-        (other_client_id, "Koti", "Kirjasto")
+        (other_client_id, "Koti", "Kirjasto", user_ids["worker"])
     )
 
     trips = get_trips(client_id)
@@ -615,7 +635,7 @@ def test_get_trips_closes_connection_on_error(monkeypatch):
 def test_update_trip_rejects_invalid_id():
     for trip_id in ("1", None, True, 0, -1):
         with pytest.raises(ValueError):
-            update_trip(trip_id, {"destination": "Kauppa"})
+            update_trip(1, trip_id, {"destination": "Kauppa"})
 
 
 def test_update_trip_rejects_invalid_changes():
@@ -630,7 +650,7 @@ def test_update_trip_rejects_invalid_changes():
 
     for changes in invalid_changes:
         with pytest.raises(ValueError):
-            update_trip(1, changes)
+            update_trip(1, 1, changes)
 
 
 def test_update_trip_rejects_invalid_locations():
@@ -644,7 +664,7 @@ def test_update_trip_rejects_invalid_locations():
 
     for changes in invalid_changes:
         with pytest.raises(ValueError):
-            update_trip(1, changes)
+            update_trip(1, 1, changes)
 
 
 def test_update_trip_rejects_invalid_distance():
@@ -660,11 +680,12 @@ def test_update_trip_rejects_invalid_distance():
 
     for distance_km in invalid_distances:
         with pytest.raises(ValueError):
-            update_trip(1, {"distance_km": distance_km})
+            update_trip(1, 1, {"distance_km": distance_km})
 
 
 def test_update_trip_changes_locations(
     postgres_cursor_with_trips,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -682,24 +703,25 @@ def test_update_trip_changes_locations(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Testi", "Asiakas")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Testi", "Asiakas", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
-        INSERT INTO trips (client_id, start_location, destination, distance_km)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO trips (client_id, start_location, destination, distance_km, created_by_user_id)
+        VALUES (%s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (client_id, "Koti", "Kauppa", Decimal("12.50"))
+        (client_id, "Koti", "Kauppa", Decimal("12.50"), user_ids["worker"])
     )
 
     trip_id = cursor.fetchone()[0]
 
     updated = update_trip(
+        user_ids["worker"],
         trip_id,
         {
             "start_location": "  Asiakkaan koti  ",
@@ -727,11 +749,12 @@ def test_update_trip_changes_locations(
     )
 
     # Saving the same value again is still a successful update
-    assert update_trip(trip_id, {"destination": "Apteekki"}) is True
+    assert update_trip(user_ids["worker"], trip_id, {"destination": "Apteekki"}) is True
 
 
 def test_update_trip_changes_and_clears_distance(
     postgres_cursor_with_trips,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -749,24 +772,24 @@ def test_update_trip_changes_and_clears_distance(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Testi", "Asiakas")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Testi", "Asiakas", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
-        INSERT INTO trips (client_id, start_location, destination)
-        VALUES (%s, %s, %s)
+        INSERT INTO trips (client_id, start_location, destination, created_by_user_id)
+        VALUES (%s, %s, %s, %s)
         RETURNING id
         """,
-        (client_id, "Koti", "Kauppa")
+        (client_id, "Koti", "Kauppa", user_ids["worker"])
     )
 
     trip_id = cursor.fetchone()[0]
 
-    assert update_trip(trip_id, {"distance_km": 7.25}) is True
+    assert update_trip(user_ids["worker"], trip_id, {"distance_km": 7.25}) is True
 
     cursor.execute(
         "SELECT distance_km FROM trips WHERE id = %s",
@@ -775,7 +798,7 @@ def test_update_trip_changes_and_clears_distance(
 
     assert cursor.fetchone()[0] == Decimal("7.25")
 
-    assert update_trip(trip_id, {"distance_km": None}) is True
+    assert update_trip(user_ids["worker"], trip_id, {"distance_km": None}) is True
 
     cursor.execute(
         "SELECT distance_km FROM trips WHERE id = %s",
@@ -787,6 +810,7 @@ def test_update_trip_changes_and_clears_distance(
 
 def test_update_trip_returns_false_if_not_found(
     postgres_cursor_with_trips,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -804,6 +828,7 @@ def test_update_trip_returns_false_if_not_found(
     )
 
     updated = update_trip(
+        user_ids["worker"],
         999999,
         {"destination": "Kauppa"}
     )
@@ -813,6 +838,7 @@ def test_update_trip_returns_false_if_not_found(
 
 def test_update_trip_rolls_back_on_error(
     postgres_cursor_with_trips,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -824,7 +850,7 @@ def test_update_trip_rolls_back_on_error(
     def get_test_connection():
         return connect_to_test_postgres(database=database)
 
-    def update_then_fail(cursor, trip_id, changes):
+    def update_then_fail(cursor, updated_by_user_id, trip_id, changes):
         cursor.execute(
             """
             UPDATE trips
@@ -847,25 +873,25 @@ def test_update_trip_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Testi", "Asiakas")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Testi", "Asiakas", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
-        INSERT INTO trips (client_id, start_location, destination)
-        VALUES (%s, %s, %s)
+        INSERT INTO trips (client_id, start_location, destination, created_by_user_id)
+        VALUES (%s, %s, %s, %s)
         RETURNING id
         """,
-        (client_id, "Koti", "Kauppa")
+        (client_id, "Koti", "Kauppa", user_ids["worker"])
     )
 
     trip_id = cursor.fetchone()[0]
 
     with pytest.raises(RuntimeError, match="Simulated update failure"):
-        update_trip(trip_id, {"destination": "Apteekki"})
+        update_trip(user_ids["worker"], trip_id, {"destination": "Apteekki"})
 
     cursor.execute(
         "SELECT destination FROM trips WHERE id = %s",
@@ -903,7 +929,10 @@ def test_update_trip_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
-    def update_then_fail(cursor, trip_id, changes):
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.trips.get_active_user", fake_active_user)
+
+    def update_then_fail(cursor, updated_by_user_id, trip_id, changes):
         raise RuntimeError("Simulated update failure")
 
     monkeypatch.setattr(
@@ -917,7 +946,7 @@ def test_update_trip_closes_connection_on_error(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Simulated update failure"):
-        update_trip(1, {"destination": "Kauppa"})
+        update_trip(1, 1, {"destination": "Kauppa"})
 
     assert connection.test_cursor.closed is True
     assert connection.closed is True
@@ -929,11 +958,12 @@ def test_update_trip_closes_connection_on_error(monkeypatch):
 def test_delete_trip_rejects_invalid_id():
     for trip_id in ("1", None, True, 0, -1):
         with pytest.raises(ValueError):
-            delete_trip(trip_id)
+            delete_trip(1, trip_id)
 
 
 def test_delete_trip_removes_only_given_trip(
     postgres_cursor_with_trips,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -951,35 +981,35 @@ def test_delete_trip_removes_only_given_trip(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Testi", "Asiakas")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Testi", "Asiakas", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
-        INSERT INTO trips (client_id, start_location, destination)
-        VALUES (%s, %s, %s)
+        INSERT INTO trips (client_id, start_location, destination, created_by_user_id)
+        VALUES (%s, %s, %s, %s)
         RETURNING id
         """,
-        (client_id, "Koti", "Kauppa")
+        (client_id, "Koti", "Kauppa", user_ids["worker"])
     )
 
     trip_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
-        INSERT INTO trips (client_id, start_location, destination)
-        VALUES (%s, %s, %s)
+        INSERT INTO trips (client_id, start_location, destination, created_by_user_id)
+        VALUES (%s, %s, %s, %s)
         RETURNING id
         """,
-        (client_id, "Koti", "Apteekki")
+        (client_id, "Koti", "Apteekki", user_ids["worker"])
     )
 
     other_trip_id = cursor.fetchone()[0]
 
-    deleted = delete_trip(trip_id)
+    deleted = delete_trip(user_ids["worker"], trip_id)
 
     assert deleted is True
 
@@ -999,6 +1029,7 @@ def test_delete_trip_removes_only_given_trip(
 
 def test_delete_trip_returns_false_if_not_found(
     postgres_cursor_with_trips,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1015,13 +1046,14 @@ def test_delete_trip_returns_false_if_not_found(
         get_test_connection
     )
 
-    deleted = delete_trip(999999)
+    deleted = delete_trip(user_ids["worker"], 999999)
 
     assert deleted is False
 
 
 def test_delete_trip_rolls_back_on_error(
     postgres_cursor_with_trips,
+    user_ids,
     connect_to_test_postgres,
     monkeypatch
 ):
@@ -1052,25 +1084,25 @@ def test_delete_trip_rolls_back_on_error(
     )
 
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
-        ("Testi", "Asiakas")
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) VALUES (%s, %s, %s) RETURNING id",
+        ("Testi", "Asiakas", user_ids["worker"])
     )
 
     client_id = cursor.fetchone()[0]
 
     cursor.execute(
         """
-        INSERT INTO trips (client_id, start_location, destination)
-        VALUES (%s, %s, %s)
+        INSERT INTO trips (client_id, start_location, destination, created_by_user_id)
+        VALUES (%s, %s, %s, %s)
         RETURNING id
         """,
-        (client_id, "Koti", "Kauppa")
+        (client_id, "Koti", "Kauppa", user_ids["worker"])
     )
 
     trip_id = cursor.fetchone()[0]
 
     with pytest.raises(RuntimeError, match="Simulated delete failure"):
-        delete_trip(trip_id)
+        delete_trip(user_ids["worker"], trip_id)
 
     cursor.execute(
         "SELECT COUNT(*) FROM trips WHERE id = %s",
@@ -1108,6 +1140,9 @@ def test_delete_trip_closes_connection_on_error(monkeypatch):
     def get_test_connection():
         return connection
 
+    # The fake cursor cannot run the user check, so it is replaced
+    monkeypatch.setattr("carelog.services.trips.get_active_user", fake_active_user)
+
     def delete_then_fail(cursor, trip_id):
         raise RuntimeError("Simulated delete failure")
 
@@ -1122,7 +1157,7 @@ def test_delete_trip_closes_connection_on_error(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Simulated delete failure"):
-        delete_trip(1)
+        delete_trip(1, 1)
 
     assert connection.test_cursor.closed is True
     assert connection.closed is True
@@ -1402,3 +1437,111 @@ def test_calculate_trip_distance_does_not_change_input(block_real_database):
         {"start_location": " Koti ", "destination": " Kauppa ", "distance_km": 3.2},
         {"start_location": "Kauppa", "destination": "Koti", "distance_km": None},
     ]
+
+
+# USER TRACKING TESTS
+
+
+def test_trip_writes_reject_invalid_actor_id():
+    # The user check itself is tested in test_user_validation.py
+    for actor_user_id in (None, True, "1", 0):
+        with pytest.raises(ValueError):
+            add_trip(actor_user_id, 1, "Koti", "Kauppa")
+
+        with pytest.raises(ValueError):
+            update_trip(actor_user_id, 1, {"destination": "Apteekki"})
+
+        with pytest.raises(ValueError):
+            delete_trip(actor_user_id, 1)
+
+
+def test_trip_saves_creator_and_latest_editor(
+    postgres_cursor_with_trips,
+    user_ids,
+    connect_to_test_postgres,
+    monkeypatch
+):
+    cursor = postgres_cursor_with_trips
+
+    cursor.execute("SELECT current_database()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_postgres(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.trips.get_postgres_connection",
+        get_test_connection
+    )
+
+    worker_id = user_ids["worker"]
+    other_worker_id = user_ids["other_worker"]
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) "
+        "VALUES (%s, %s, %s) RETURNING id",
+        ("Testi", "Asiakas", user_ids["admin"])
+    )
+    client_id = cursor.fetchone()[0]
+
+    trip_id = add_trip(worker_id, client_id, "Koti", "Kauppa")
+
+    trip = get_trip(trip_id)
+    assert trip["created_by_user_id"] == worker_id
+    assert trip["updated_by_user_id"] is None
+
+    # Saved trips are shared: another worker may change the trip
+    assert update_trip(other_worker_id, trip_id, {"distance_km": Decimal("4.50")})
+
+    trips = get_trips(client_id)
+    assert len(trips) == 1
+    assert trips[0]["created_by_user_id"] == worker_id
+    assert trips[0]["updated_by_user_id"] == other_worker_id
+
+    assert delete_trip(other_worker_id, trip_id) is True
+    assert get_trip(trip_id) is None
+
+
+def test_trip_writes_reject_missing_and_inactive_users(
+    postgres_cursor_with_trips,
+    user_ids,
+    connect_to_test_postgres,
+    monkeypatch
+):
+    cursor = postgres_cursor_with_trips
+
+    cursor.execute("SELECT current_database()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_postgres(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.trips.get_postgres_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name, created_by_user_id) "
+        "VALUES (%s, %s, %s) RETURNING id",
+        ("Testi", "Asiakas", user_ids["admin"])
+    )
+    client_id = cursor.fetchone()[0]
+
+    trip_id = add_trip(user_ids["worker"], client_id, "Koti", "Kauppa")
+    inactive_id = user_ids["inactive"]
+    missing_id = user_ids["admin"] + user_ids["worker"] + 1000
+
+    with pytest.raises(PermissionError):
+        add_trip(inactive_id, client_id, "Koti", "Apteekki")
+
+    with pytest.raises(ValueError, match="User not found"):
+        update_trip(missing_id, trip_id, {"destination": "Apteekki"})
+
+    with pytest.raises(PermissionError):
+        delete_trip(inactive_id, trip_id)
+
+    # Nothing was saved, and the trip was not deleted
+    cursor.execute("SELECT id, destination, updated_by_user_id FROM trips")
+
+    assert cursor.fetchall() == [(trip_id, "Kauppa", None)]

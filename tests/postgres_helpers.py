@@ -36,27 +36,97 @@ def assert_postgres_error(cursor, error_class, sql, values=()):
         cursor.execute(sql, values)
 
 
-def insert_client(cursor):
+def insert_user(cursor, email="test.user@example.com", role="worker", is_active=True):
+    # A test user of a temporary test database. The hash is not a real
+    # password hash.
     cursor.execute(
-        "INSERT INTO clients (first_name, last_name) "
-        "VALUES ('Test', 'Client') RETURNING id"
+        "INSERT INTO users (email, display_name, password_hash, role, is_active) "
+        "VALUES (%s, 'Test User', 'test-only-hash', %s, %s) RETURNING id",
+        (email, role, is_active),
     )
     return cursor.fetchone()[0]
 
 
-def insert_service(cursor):
-    cursor.execute("INSERT INTO services (name) VALUES ('Test service') RETURNING id")
+def insert_test_users(cursor):
+    # The standard test users. Use the returned ids; never assume them.
+    # Run with the test user that owns the tables: the application account
+    # cannot add users.
+    return {
+        "admin": insert_user(cursor, "admin.test@example.com", "admin"),
+        "worker": insert_user(cursor, "worker.test@example.com", "worker"),
+        "other_worker": insert_user(cursor, "other.worker.test@example.com", "worker"),
+        "inactive": insert_user(cursor, "inactive.test@example.com", "worker", False),
+    }
+
+
+# Without user_id the rows below are added as in the schema before v014,
+# which has no user columns. With user_id the same user is the creator
+# and, for a visit, also the worker.
+
+
+def insert_client(cursor, user_id=None):
+    if user_id is None:
+        cursor.execute(
+            "INSERT INTO clients (first_name, last_name) "
+            "VALUES ('Test', 'Client') RETURNING id"
+        )
+    else:
+        cursor.execute(
+            "INSERT INTO clients (first_name, last_name, created_by_user_id) "
+            "VALUES ('Test', 'Client', %s) RETURNING id",
+            (user_id,),
+        )
+
     return cursor.fetchone()[0]
 
 
-def insert_visit(cursor):
-    client_id = insert_client(cursor)
-    service_id = insert_service(cursor)
+def insert_service(cursor, user_id=None):
+    if user_id is None:
+        cursor.execute("INSERT INTO services (name) VALUES ('Test service') RETURNING id")
+    else:
+        cursor.execute(
+            "INSERT INTO services (name, created_by_user_id) "
+            "VALUES ('Test service', %s) RETURNING id",
+            (user_id,),
+        )
+
+    return cursor.fetchone()[0]
+
+
+def insert_visit(cursor, user_id=None):
+    client_id = insert_client(cursor, user_id)
+    service_id = insert_service(cursor, user_id)
+
+    if user_id is None:
+        cursor.execute(
+            "INSERT INTO visits (client_id, service_id) VALUES (%s, %s) RETURNING id",
+            (client_id, service_id),
+        )
+    else:
+        cursor.execute(
+            "INSERT INTO visits (client_id, service_id, user_id, created_by_user_id) "
+            "VALUES (%s, %s, %s, %s) RETURNING id",
+            (client_id, service_id, user_id, user_id),
+        )
+
+    return cursor.fetchone()[0]
+
+
+def set_actor(cursor, user_id):
+    # Gives the editor of the next change of a note's content, as the
+    # application does since v014. Must be run inside a transaction:
+    # the value disappears when the transaction ends.
     cursor.execute(
-        "INSERT INTO visits (client_id, service_id) VALUES (%s, %s) RETURNING id",
-        (client_id, service_id),
+        "SELECT set_config('carelog.actor_user_id', %s, true)",
+        (str(user_id),),
     )
-    return cursor.fetchone()[0]
+
+
+def fake_active_user(cursor, actor_user_id):
+    # Replaces the user check of a service in tests whose fake cursor
+    # cannot run SQL. The user check itself is tested in
+    # test_user_validation.py.
+    return {"id": actor_user_id, "role": "worker", "is_active": True}
 
 
 def start_in_thread(function, *args, **kwargs):

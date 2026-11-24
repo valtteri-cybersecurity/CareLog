@@ -9,6 +9,7 @@ from carelog.database.repositories.update_trip import (
     ALLOWED_FIELDS,
     update_trip_record,
 )
+from carelog.services.user_validation import get_active_user, validate_user_id
 
 
 def validate_distance_km(
@@ -147,11 +148,17 @@ def calculate_trip_distance(legs: list[dict]) -> Decimal | None:
 
 
 def add_trip(
+    actor_user_id: int,
     client_id: int,
     start_location: str,
     destination: str,
     distance_km: Decimal | int | float | None = None
 ) -> int:
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Client ID validation
     # The foreign key in the database checks that the client exists.
@@ -201,8 +208,11 @@ def add_trip(
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
+        get_active_user(cursor, actor_user_id)
+
         trip_id = insert_trip(
             cursor,
+            actor_user_id,
             client_id,
             start_location,
             destination,
@@ -288,7 +298,12 @@ def get_trips(client_id: int) -> list[dict]:
             connection.close()
 
 
-def update_trip(trip_id: int, changes: dict) -> bool:
+def update_trip(actor_user_id: int, trip_id: int, changes: dict) -> bool:
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Trip ID validation
 
@@ -346,8 +361,11 @@ def update_trip(trip_id: int, changes: dict) -> bool:
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
+        get_active_user(cursor, actor_user_id)
+
         updated = update_trip_record(
             cursor,
+            actor_user_id,
             trip_id,
             validated_changes
         )
@@ -369,7 +387,12 @@ def update_trip(trip_id: int, changes: dict) -> bool:
             connection.close()
 
 
-def delete_trip(trip_id: int) -> bool:
+def delete_trip(actor_user_id: int, trip_id: int) -> bool:
+
+    # Actor validation. The user is checked in the database below, in the
+    # same transaction as the rest of the operation.
+
+    validate_user_id(actor_user_id)
 
     # Trip ID validation
 
@@ -387,6 +410,8 @@ def delete_trip(trip_id: int) -> bool:
     try:
         connection = get_postgres_connection()
         cursor = connection.cursor()
+
+        get_active_user(cursor, actor_user_id)
 
         deleted = delete_trip_record(
             cursor,
