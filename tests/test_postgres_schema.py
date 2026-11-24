@@ -36,7 +36,7 @@ def test_users_constraints(migrated_cursor):
     assert role == "worker"
     assert is_active is True
 
-    # The same email in other letter case is a duplicate, as in MySQL
+    # The same email in other letter case is a duplicate
     assert_postgres_error(
         cursor, psycopg.errors.UniqueViolation,
         "INSERT INTO users (email, display_name, password_hash) "

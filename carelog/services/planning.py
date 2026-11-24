@@ -10,7 +10,7 @@ from carelog.services.visits import (
 def get_visit_day(visit: dict) -> date | None:
 
     # Returns the local calendar day of a visit, or None if the visit
-    # has no day yet. DATETIME values come from the database in UTC
+    # has no day yet. TIMESTAMP values come from the database in UTC
     # without a time zone, so UTC is attached before converting.
 
     if visit["status"] == "completed":

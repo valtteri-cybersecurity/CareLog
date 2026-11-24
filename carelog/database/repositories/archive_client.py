@@ -6,7 +6,7 @@ def archive_client_record(
     client_id: int
 ) -> bool:
 
-    # The current time in UTC, as UTC_TIMESTAMP() in MySQL
+    # The current time in UTC, stored without a time zone
     sql = """
         UPDATE clients
         SET archived_at = CURRENT_TIMESTAMP AT TIME ZONE 'UTC'

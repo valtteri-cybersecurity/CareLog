@@ -730,4 +730,4 @@ def run_postgres_migrations(database=None, *, password):
 
 
 if __name__ == "__main__":
-    raise SystemExit("Run database migrations through install.sh --postgres")
+    raise SystemExit("Run database migrations through: bash install.sh")

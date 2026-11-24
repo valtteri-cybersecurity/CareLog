@@ -25,7 +25,7 @@ def test_validate_note_content_strips_edges_and_keeps_lines():
         "Käytiin kaupassa.\nHaettiin lääkkeet apteekista."
     )
 
-    # Exactly the size of a TEXT column is allowed
+    # Exactly CareLog's upper limit of 65535 bytes is allowed
     assert validate_note_content("a" * 65535) == "a" * 65535
 
 

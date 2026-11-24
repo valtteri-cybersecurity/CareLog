@@ -41,8 +41,10 @@ def add_service(
         if not description:
             description = None
 
+        # CareLog's own upper limit, 65535 bytes. A PostgreSQL TEXT
+        # column itself has no practical size limit.
         elif len(description.encode("utf-8")) > 65535:
-            raise ValueError("Description exceeds database limit")
+            raise ValueError("Description is too long")
 
     # Hourly rate validation
 
@@ -212,8 +214,9 @@ def update_service(service_id: int, changes: dict) -> bool:
                 if not value:
                     value = None
 
+                # CareLog's own upper limit, as in add_service()
                 elif len(value.encode("utf-8")) > 65535:
-                    raise ValueError("Description exceeds database limit")
+                    raise ValueError("Description is too long")
 
             validated_changes[field] = value
             continue

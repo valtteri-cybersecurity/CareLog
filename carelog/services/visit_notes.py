@@ -20,8 +20,10 @@ def validate_note_content(content: str) -> str:
     if not content:
         raise ValueError("Note content cannot be empty")
 
+    # CareLog's own upper limit, 65535 bytes. A PostgreSQL TEXT column
+    # itself has no practical size limit.
     if len(content.encode("utf-8")) > 65535:
-        raise ValueError("Note content exceeds database limit")
+        raise ValueError("Note content is too long")
 
     return content
 

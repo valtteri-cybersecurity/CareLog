@@ -59,8 +59,10 @@ def validate_description(description: str | None) -> str | None:
     if not description:
         return None
 
+    # CareLog's own upper limit, 65535 bytes. A PostgreSQL TEXT column
+    # itself has no practical size limit.
     if len(description.encode("utf-8")) > 65535:
-        raise ValueError("Description exceeds database limit")
+        raise ValueError("Description is too long")
 
     return description
 
@@ -486,7 +488,7 @@ def get_visit(visit_id: int) -> dict | None:
         raise ValueError("Visit ID must be positive")
 
     # Database operation
-    # DATETIME values are returned in UTC as they are stored.
+    # TIMESTAMP values are returned in UTC as they are stored.
 
     connection = None
     cursor = None
@@ -952,15 +954,17 @@ def complete_visit(
             duration_minutes = visit["planned_duration_minutes"]
 
         # Default start time: the planned time, but only if it is on the
-        # completed day. A planned time is never moved to another day.
+        # completed day and has already passed. A planned time is never
+        # moved to another day. A planned time that has not come yet is
+        # not used, because the visit was done earlier than planned.
+
+        start_from_plan = False
 
         if started_at is None and planned_at is not None:
 
-            if planned_local_date == completed_date:
+            if planned_local_date == completed_date and planned_at <= now:
                 started_at = planned_at
-
-                if started_at > now:
-                    raise ValueError("Start time cannot be in the future")
+                start_from_plan = True
 
         # End time from the start time and the accepted duration, so the
         # times and the duration always match.
@@ -971,7 +975,16 @@ def complete_visit(
                 ended_at = started_at + timedelta(minutes=duration_minutes)
 
                 if ended_at > now:
-                    raise ValueError("End time cannot be in the future")
+
+                    if start_from_plan:
+                        # The visit ended before the planned end time, so
+                        # the planned times are not the actual ones. Only
+                        # the day and the duration are saved.
+                        started_at = None
+                        ended_at = None
+
+                    else:
+                        raise ValueError("End time cannot be in the future")
 
         completed = complete_visit_record(
             cursor,

@@ -2763,6 +2763,73 @@ def test_complete_visit_with_own_day_or_times(
     )
 
 
+def test_complete_visit_before_planned_end_time(
+    postgres_cursor_with_visit_scheduling,
+    connect_to_test_postgres,
+    monkeypatch
+):
+    cursor = postgres_cursor_with_visit_scheduling
+
+    cursor.execute("SELECT current_database()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_postgres(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.visits.get_postgres_connection",
+        get_test_connection
+    )
+
+    cursor.execute(
+        "INSERT INTO clients (first_name, last_name) VALUES (%s, %s) RETURNING id",
+        ("Hilma", "Testi")
+    )
+
+    client_id = cursor.fetchone()[0]
+
+    cursor.execute(
+        "INSERT INTO services (name) VALUES (%s) RETURNING id",
+        ("Kauppa-asiointi",)
+    )
+
+    service_id = cursor.fetchone()[0]
+
+    # Started 30 minutes ago and planned for 120 minutes, so the planned
+    # end time has not come yet
+    planned_at = datetime.now(HELSINKI) - timedelta(minutes=30)
+
+    visit_id = add_planned_visit(
+        client_id,
+        service_id,
+        planned_at=planned_at,
+        planned_duration_minutes=120
+    )
+
+    completed = complete_visit(visit_id)
+
+    assert completed is True
+
+    cursor.execute(
+        """
+        SELECT status, completed_date, duration_minutes, started_at, ended_at
+        FROM visits
+        WHERE id = %s
+        """,
+        (visit_id,)
+    )
+
+    # The planned times are not saved as actual times, because the end
+    # would be in the future. The day and the duration are kept.
+    assert cursor.fetchone() == (
+        "completed",
+        planned_at.date(),
+        120,
+        None,
+        None,
+    )
+
+
 def test_complete_visit_without_exact_times(
     postgres_cursor_with_visit_scheduling,
     connect_to_test_postgres,
