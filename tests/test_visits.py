@@ -1445,8 +1445,10 @@ def test_get_client_visits_returns_all_statuses_newest_first(
     assert visits[2]["completed_date"] == date(2026, 11, 18)
     assert visits[3]["status"] == "cancelled"
 
-    # Each visit has the same fields as get_visit() returns
-    assert len(visits[0]) == 18
+    # Each visit has the same fields as get_visit() returns, including
+    # the user columns of v014
+    assert len(visits[0]) == 21
+    assert visits[0]["user_id"] == user_ids["worker"]
     assert visits[1]["planned_duration_minutes"] == 120
     assert visits[1]["duration_minutes"] is None
 

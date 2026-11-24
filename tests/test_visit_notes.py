@@ -504,8 +504,22 @@ def test_get_visit_notes_returns_notes_oldest_first(
     # The other visit's note is not included
     assert contents == ["Ensimmäinen", "Toinen", "Kolmas", "Neljäs"]
 
-    assert set(notes[0]) == {"id", "visit_id", "content", "created_at", "updated_at"}
+    assert set(notes[0]) == {
+        "id",
+        "visit_id",
+        "content",
+        "created_at",
+        "updated_at",
+        "created_by_user_id",
+        "updated_by_user_id",
+    }
     assert notes[0]["visit_id"] == visit_id
+
+    # The creator of each note is saved, also for a note added through
+    # the service. A note that was never edited has no editor yet.
+    assert notes[0]["created_by_user_id"] == user_ids["worker"]
+    assert notes[3]["created_by_user_id"] == user_ids["worker"]
+    assert notes[0]["updated_by_user_id"] is None
     assert notes[0]["created_at"] == datetime(2026, 11, 18, 9, 0)
     assert notes[0]["id"] < notes[1]["id"]
 

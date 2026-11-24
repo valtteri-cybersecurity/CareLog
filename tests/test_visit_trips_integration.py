@@ -483,7 +483,7 @@ def test_failure_after_all_legs_rolls_back_everything(
     # deleted and all new legs inserted when the total is updated.
     # (tests/test_visit_trips.py covers a failure in the middle of the
     # inserts.)
-    def update_then_fail(cursor, visit_id, distance_km):
+    def update_then_fail(cursor, updated_by_user_id, visit_id, distance_km):
         cursor.execute(
             "UPDATE visits SET no_such_column = %s WHERE id = %s",
             (distance_km, visit_id)
