@@ -1,5 +1,7 @@
 import re
 
+from psycopg import pq
+
 from carelog.database.postgres_connection import get_postgres_connection
 from carelog.database.postgres_migrations import (
     v001_users,
@@ -803,20 +805,30 @@ def validate_schema(cursor, applied_versions):
     validate_business_constraints(cursor, applied_versions)
 
 
-def run_postgres_migrations(database=None, *, password):
-    if not password:
-        raise ValueError("A password for carelog_migrator is required")
+def apply_migrations(connection):
+    # Runs the pending migrations on an open connection. Both
+    # run_postgres_migrations() and the test fixtures use this function,
+    # so the migrations always run the same way.
+    #
+    # The caller owns the connection and closes it. This function owns
+    # its cursor and the transactions: every migration, its version
+    # record and the schema check are committed together, and a failed
+    # migration is rolled back. Migrations committed before it stay.
 
-    connection = None
+    # A migration needs its own transaction, for example for LOCK TABLE
+    # in v014, so autocommit must be off.
+    if connection.autocommit:
+        raise RuntimeError("Migrations need a connection with autocommit off")
+
+    # An open transaction of the caller would be committed or rolled back
+    # together with the migrations, so it is not allowed. Nothing is
+    # changed before these checks.
+    if connection.info.transaction_status != pq.TransactionStatus.IDLE:
+        raise RuntimeError("Migrations need a connection without an open transaction")
+
     cursor = None
 
     try:
-        connection = get_postgres_connection(
-            database=database,
-            user="carelog_migrator",
-            password=password,
-        )
-
         cursor = connection.cursor()
         check_schema(cursor)
         create_migrations_table(cursor)
@@ -875,18 +887,36 @@ def run_postgres_migrations(database=None, *, password):
             validate_schema(cursor, applied_versions)
             connection.commit()
 
-    except Exception as error:
-        print(f"Migration error: {error}")
-
-        if connection is not None:
-            connection.rollback()
-
+    except Exception:
+        connection.rollback()
         raise
 
     finally:
         if cursor is not None:
             cursor.close()
 
+
+def run_postgres_migrations(database=None, *, password):
+    if not password:
+        raise ValueError("A password for carelog_migrator is required")
+
+    connection = None
+
+    try:
+        # A new connection has autocommit off and no open transaction
+        connection = get_postgres_connection(
+            database=database,
+            user="carelog_migrator",
+            password=password,
+        )
+
+        apply_migrations(connection)
+
+    except Exception as error:
+        print(f"Migration error: {error}")
+        raise
+
+    finally:
         if connection is not None:
             connection.close()
 

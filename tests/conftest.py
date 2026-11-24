@@ -146,10 +146,16 @@ def postgres_cursor(connect_to_test_postgres):
 
 @pytest.fixture(scope="session")
 def migrated_template_database(connect_to_test_postgres):
-    # Runs every migration once per test session, as
-    # run_postgres_migrations() does, into a template database. The
-    # connection is closed before the copies are made: PostgreSQL copies
-    # a template only when nobody is connected to it.
+    # Runs every migration once per test session into a template
+    # database, with apply_migrations(), the same function that
+    # run_postgres_migrations() uses in production.
+    #
+    # Three kinds of connections are kept apart:
+    # - admin_connection (autocommit): CREATE and DROP DATABASE, which
+    #   PostgreSQL does not allow inside a transaction
+    # - migration_connection (autocommit off): apply_migrations() runs
+    #   each migration in its own transaction
+    # - the test cursors of create_test_database() (autocommit)
     database = f"carelog_test_template_{uuid4().hex}"
     admin_connection = connect_to_test_postgres(autocommit=True)
 
@@ -157,14 +163,14 @@ def migrated_template_database(connect_to_test_postgres):
         admin_connection.execute(f'CREATE DATABASE "{database}"')
 
         try:
-            connection = connect_to_test_postgres(database=database, autocommit=True)
+            migration_connection = connect_to_test_postgres(database=database, autocommit=False)
 
-            with connection, connection.cursor() as cursor:
-                postgres_migrate.create_migrations_table(cursor)
-
-                for version, table, upgrade in postgres_migrate.MIGRATIONS:
-                    upgrade(cursor)
-                    postgres_migrate.record_migration(cursor, version)
+            # The connection is closed before the copies are made:
+            # PostgreSQL copies a template only when nobody is connected.
+            try:
+                postgres_migrate.apply_migrations(migration_connection)
+            finally:
+                migration_connection.close()
 
             yield database
 

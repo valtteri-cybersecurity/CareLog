@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import pytest
+from psycopg import pq
 
 from carelog.database import postgres_migrate
 from carelog.database.postgres_migrations import (
@@ -16,6 +17,7 @@ from carelog.database.postgres_migrations import (
     v010_visit_constraints,
     v011_visit_trip_legs,
     v012_foreign_key_indexes,
+    v014_user_tracking,
 )
 from tests.postgres_helpers import (
     get_columns,
@@ -406,6 +408,127 @@ def test_failed_migration_is_rolled_back(postgres_cursor, migration_database, mo
     assert postgres_migrate.get_applied_versions(postgres_cursor) == EXPECTED_VERSIONS
     assert table_exists(postgres_cursor, "visit_trip_legs")
 
+
+
+def test_failed_schema_check_rolls_back_the_migration(
+    postgres_cursor,
+    migration_database,
+    monkeypatch
+):
+    # v014 runs, but leaves an index that the schema check does not
+    # expect. The check fails after the changes, inside the same
+    # transaction as the migration and its version record.
+    def upgrade_with_unexpected_index(cursor):
+        v014_user_tracking.upgrade(cursor)
+        cursor.execute("CREATE INDEX idx_visits_unexpected ON visits (status)")
+
+    original_migrations = postgres_migrate.MIGRATIONS
+    changed_migrations = []
+
+    for version, table, upgrade in original_migrations:
+        if version == 14:
+            upgrade = upgrade_with_unexpected_index
+
+        changed_migrations.append((version, table, upgrade))
+
+    monkeypatch.setattr(postgres_migrate, "MIGRATIONS", changed_migrations)
+
+    with pytest.raises(RuntimeError, match="Invalid indexes in table: visits"):
+        postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
+
+    # Migrations 1–13 stay. Every change of v014 was rolled back with its
+    # version record.
+    assert postgres_migrate.get_applied_versions(postgres_cursor) == VERSIONS_UNTIL_V013
+
+    for column in get_columns(postgres_cursor, "clients"):
+        assert column[0] != "created_by_user_id"
+
+    assert not function_exists(postgres_cursor, "prevent_created_by_change")
+
+    # The real v014 completes the migration
+    monkeypatch.setattr(postgres_migrate, "MIGRATIONS", original_migrations)
+    postgres_migrate.run_postgres_migrations(migration_database, password="test-only")
+
+    assert postgres_migrate.get_applied_versions(postgres_cursor) == EXPECTED_VERSIONS
+
+
+def test_apply_migrations_rejects_autocommit_connection(
+    postgres_cursor,
+    migration_database,
+    connect_to_test_postgres
+):
+    connection = connect_to_test_postgres(database=migration_database, autocommit=True)
+
+    try:
+        with pytest.raises(RuntimeError, match="autocommit off"):
+            postgres_migrate.apply_migrations(connection)
+    finally:
+        connection.close()
+
+    # Nothing was changed
+    assert not table_exists(postgres_cursor, "schema_migrations")
+
+
+def test_apply_migrations_rejects_open_transaction(
+    postgres_cursor,
+    migration_database,
+    connect_to_test_postgres
+):
+    connection = connect_to_test_postgres(database=migration_database)
+
+    try:
+        # The caller's own change is waiting in an open transaction
+        connection.execute("CREATE TABLE caller_table (id INT)")
+
+        with pytest.raises(RuntimeError, match="open transaction"):
+            postgres_migrate.apply_migrations(connection)
+
+        # The caller's transaction was neither committed nor rolled back
+        assert connection.info.transaction_status == pq.TransactionStatus.INTRANS
+
+        connection.rollback()
+    finally:
+        connection.close()
+
+    assert not table_exists(postgres_cursor, "caller_table")
+    assert not table_exists(postgres_cursor, "schema_migrations")
+
+
+def test_run_migrations_uses_apply_migrations_and_closes_connection(monkeypatch):
+    # The production runner only opens the connection, calls the shared
+    # apply_migrations() and closes the connection, also after an error.
+    class FakeConnection:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    connection = FakeConnection()
+    calls = []
+
+    def get_test_connection(database=None, user=None, password=None):
+        return connection
+
+    def apply_then_fail(given_connection):
+        calls.append(given_connection)
+        raise RuntimeError("Simulated migration failure")
+
+    monkeypatch.setattr(postgres_migrate, "get_postgres_connection", get_test_connection)
+    monkeypatch.setattr(postgres_migrate, "apply_migrations", apply_then_fail)
+
+    with pytest.raises(RuntimeError, match="Simulated migration failure"):
+        postgres_migrate.run_postgres_migrations(password="test-only")
+
+    assert calls == [connection]
+    assert connection.closed is True
+
+
+def test_template_database_is_migrated_like_production(migrated_cursor):
+    # The test template is built with apply_migrations(), so it has the
+    # same version records and passes the same schema check.
+    assert postgres_migrate.get_applied_versions(migrated_cursor) == EXPECTED_VERSIONS
+    postgres_migrate.validate_schema(migrated_cursor, EXPECTED_VERSIONS)
 
 def test_upgrade_from_v013_database(postgres_cursor, migration_database):
     build_database_until(postgres_cursor, 13)
