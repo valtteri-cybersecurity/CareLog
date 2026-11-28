@@ -629,8 +629,8 @@ def test_app_account_can_run_services(app_database, app_users, monkeypatch):
     # privileges.
     # The user check of the services reads users with the application
     # account, and the creator and the latest editor are saved.
-    client_id = add_client(worker_id, "Hilma", "Testi")
-    assert update_client(admin_id, client_id, {"city": "Tampere"})
+    client_id = add_client(admin_id, "Hilma", "Testi")
+    assert update_client(worker_id, client_id, {"city": "Tampere"})
 
     service_id = add_service(admin_id, "Kauppa-asiointi", default_hourly_rate=Decimal("30.00"))
     assert update_service(worker_id, service_id, {"description": "Kaupassa käynti"})
@@ -693,7 +693,7 @@ def test_app_account_can_run_services(app_database, app_users, monkeypatch):
         "SELECT created_by_user_id, updated_by_user_id FROM clients WHERE id = %s",
         (client_id,)
     )
-    assert cursor.fetchone() == (worker_id, admin_id)
+    assert cursor.fetchone() == (admin_id, admin_id)
 
     cursor.execute(
         "SELECT created_by_user_id, updated_by_user_id FROM services WHERE id = %s",

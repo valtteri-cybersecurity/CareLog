@@ -1166,11 +1166,13 @@ def test_delete_trip_closes_connection_on_error(monkeypatch):
 # TRIP LEG TESTS
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def block_real_database(monkeypatch):
 
-    # The trip leg functions are pure Python. If they ever try to open
-    # a database connection, the test fails clearly.
+    # Autouse for the whole module: a test that does not replace the
+    # connection with the test database must never reach the real
+    # database. The trip leg functions are pure Python. If they ever try
+    # to open a database connection, the test fails clearly.
 
     def connection_not_allowed():
         raise RuntimeError("Unexpected database connection in a unit test")

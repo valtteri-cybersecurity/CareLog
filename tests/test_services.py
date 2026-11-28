@@ -11,6 +11,21 @@ from carelog.services.services import (
 from tests.postgres_helpers import fake_active_user
 
 
+@pytest.fixture(autouse=True)
+def block_real_database(monkeypatch):
+
+    # A test that does not replace the connection with the test database
+    # must never reach the real database.
+
+    def connection_not_allowed():
+        raise RuntimeError("Unexpected database connection in a test")
+
+    monkeypatch.setattr(
+        "carelog.services.services.get_postgres_connection",
+        connection_not_allowed
+    )
+
+
 def test_add_service_rejects_empty_name():
     with pytest.raises(ValueError):
         add_service(1, "")

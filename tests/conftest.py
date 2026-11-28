@@ -4,7 +4,14 @@ from uuid import uuid4
 import psycopg
 import pytest
 
-from carelog.database import postgres_migrate
+from carelog.database import postgres_connection, postgres_migrate
+from tests.database_safety import (
+    DatabaseConnectionBlocked,
+    UnsafeTestServerError,
+    read_application_target,
+    read_test_server_settings,
+    verify_test_server,
+)
 from tests.postgres_helpers import insert_test_users
 
 
@@ -18,36 +25,50 @@ from tests.postgres_helpers import insert_test_users
 #   migrations are run once per test session into a template database,
 #   and every test gets its own copy of it.
 
-# A disposable test server is marked with this comment on its postgres
-# database. Set it only on a server whose data may be lost:
-# COMMENT ON DATABASE postgres IS 'carelog-disposable-test-server';
-TEST_SERVER_MARKER = "carelog-disposable-test-server"
+
+# Connection guard. While the tests run, every way to open a Psycopg
+# connection is replaced with a function that refuses. Only the fixtures
+# below use the real function, and only after verify_test_server() has
+# accepted the server. So a test whose mock of get_postgres_connection
+# fails, or that forgets to mock it, can never reach the real database.
+#
+# The real function is saved here, when conftest.py is imported and
+# before the guard is installed in pytest_configure(). Only the
+# fixtures of this file may use it.
+REAL_PSYCOPG_CONNECT = psycopg.Connection.connect
+
+connection_guard = pytest.MonkeyPatch()
 
 
-@pytest.fixture(scope="session")
-def test_server_settings():
-    user = os.getenv("CARELOG_TEST_PG_USER")
-    if not user:
-        pytest.skip("Set CARELOG_TEST_PG_USER to run the PostgreSQL tests")
+def connection_not_allowed(*args, **kwargs):
+    raise DatabaseConnectionBlocked(
+        "Database connection blocked in tests. Use the PostgreSQL test "
+        "fixtures, which connect only to a verified disposable test server."
+    )
 
-    # The application and migration accounts must never be used for tests.
-    if user == "carelog_app" or user == "carelog_migrator":
-        pytest.exit(
-            "Do not use carelog_app or carelog_migrator as CARELOG_TEST_PG_USER; "
-            "use a separate test user",
-            returncode=1,
-        )
 
-    settings = {
-        "host": os.getenv("CARELOG_TEST_PG_HOST", "127.0.0.1"),
-        "port": int(os.getenv("CARELOG_TEST_PG_PORT", "5432")),
-        "user": user,
-        "password": os.getenv("CARELOG_TEST_PG_PASSWORD", ""),
-    }
+def classmethod_connection_not_allowed(cls, *args, **kwargs):
+    connection_not_allowed()
 
-    # The tests create and drop databases and accounts, so the server
-    # itself is checked once before any test, not only the settings above.
-    connection = psycopg.connect(
+
+def pytest_configure(config):
+    # Installed before the test modules are imported, so even code that
+    # runs at import time cannot connect.
+    connection_guard.setattr(psycopg, "connect", connection_not_allowed)
+    connection_guard.setattr(
+        psycopg.Connection, "connect", classmethod(classmethod_connection_not_allowed)
+    )
+    connection_guard.setattr(
+        psycopg.AsyncConnection, "connect", classmethod(classmethod_connection_not_allowed)
+    )
+
+
+def pytest_unconfigure(config):
+    connection_guard.undo()
+
+
+def connect_to_server_check_database(settings):
+    return REAL_PSYCOPG_CONNECT(
         host=settings["host"],
         port=settings["port"],
         dbname="postgres",
@@ -57,33 +78,32 @@ def test_server_settings():
         connect_timeout=10,
     )
 
-    with connection:
-        carelog_databases = connection.execute(
-            "SELECT COUNT(*) FROM pg_database WHERE datname = 'carelog'"
-        ).fetchone()[0]
 
-        carelog_accounts = connection.execute(
-            "SELECT COUNT(*) FROM pg_roles "
-            "WHERE rolname IN ('carelog_app', 'carelog_migrator')"
-        ).fetchone()[0]
+@pytest.fixture(scope="session")
+def test_server_settings():
+    try:
+        settings = read_test_server_settings(os.environ)
+    except UnsafeTestServerError as error:
+        pytest.exit(f"Invalid PostgreSQL test settings: {error}", returncode=1)
 
-        marker = connection.execute(
-            "SELECT shobj_description(oid, 'pg_database') "
-            "FROM pg_database WHERE datname = 'postgres'"
-        ).fetchone()[0]
+    if settings is None:
+        pytest.skip("Set CARELOG_TEST_PG_USER to run the PostgreSQL tests")
 
-    # The real CareLog server always has these. Stop all tests at once.
-    if carelog_databases != 0 or carelog_accounts != 0:
+    # The application's own database from .env, so that the tests can
+    # refuse it. Only the address, database and user are read.
+    try:
+        application_target = read_application_target(postgres_connection.ENV_FILE)
+    except (OSError, ValueError) as error:
+        pytest.exit(f"Could not read the application settings: {error}", returncode=1)
+
+    # The tests create and drop databases and accounts, so the server
+    # itself is checked once before any test, not only the settings.
+    # Any problem stops all tests at once.
+    try:
+        verify_test_server(settings, application_target, connect_to_server_check_database)
+    except UnsafeTestServerError as error:
         pytest.exit(
-            "The test server has the carelog database or the carelog_app or "
-            "carelog_migrator account. Refusing to run tests against the real "
-            "CareLog server.",
-            returncode=1,
-        )
-
-    if marker != TEST_SERVER_MARKER:
-        pytest.exit(
-            "The test server is not marked as a disposable test server. "
+            f"Refusing to run tests against this PostgreSQL server: {error}. "
             "See Running Tests in README.md.",
             returncode=1,
         )
@@ -100,7 +120,7 @@ def connect_to_test_postgres(test_server_settings):
         if password is None:
             password = test_server_settings["password"]
 
-        return psycopg.connect(
+        return REAL_PSYCOPG_CONNECT(
             host=test_server_settings["host"],
             port=test_server_settings["port"],
             dbname=database,

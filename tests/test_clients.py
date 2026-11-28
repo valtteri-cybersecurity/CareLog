@@ -5,6 +5,18 @@ import pytest
 from carelog.services.clients import add_client, get_client, get_clients, update_client, archive_client
 
 
+@pytest.fixture(autouse=True)
+def block_real_database(monkeypatch):
+
+    # A test that does not replace the connection with the test database
+    # must never reach the real database.
+
+    def connection_not_allowed():
+        raise RuntimeError("Unexpected database connection in a test")
+
+    monkeypatch.setattr("carelog.services.clients.get_postgres_connection", connection_not_allowed)
+
+
 def test_add_client_rejects_empty_first_name():
     with pytest.raises(ValueError):
         add_client(1, "", "Virtanen")
@@ -85,7 +97,7 @@ def test_add_client_saves_to_database(
         get_test_connection
     )
 
-    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen")
+    client_id = add_client(user_ids["admin"], "Hilma", "Virtanen")
 
     assert isinstance(client_id, int)
     assert client_id > 0
@@ -155,7 +167,7 @@ def test_add_client_rolls_back_on_insert_error(
     )
 
     with pytest.raises(RuntimeError, match="Simulated insert failure"):
-        add_client(user_ids["worker"], "Hilma", "Virtanen")
+        add_client(user_ids["admin"], "Hilma", "Virtanen")
 
     cursor.execute(
         """
@@ -188,7 +200,7 @@ def test_add_client_strips_whitespace(
         get_test_connection
     )
 
-    client_id = add_client(user_ids["worker"], "  Hilma  ", "  Virtanen  ")
+    client_id = add_client(user_ids["admin"], "  Hilma  ", "  Virtanen  ")
 
     cursor.execute(
         """
@@ -222,7 +234,7 @@ def test_add_client_saves_phone(
     )
 
     client_id = add_client(
-        user_ids["worker"],
+        user_ids["admin"],
         "Hilma",
         "Virtanen",
         " 0401234567 "
@@ -259,7 +271,7 @@ def test_add_client_saves_null_phone(
         get_test_connection
     )
 
-    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen")
+    client_id = add_client(user_ids["admin"], "Hilma", "Virtanen")
 
     cursor.execute(
         """
@@ -292,7 +304,7 @@ def test_add_client_saves_empty_phone_as_null(
         get_test_connection
     )
 
-    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen", "")
+    client_id = add_client(user_ids["admin"], "Hilma", "Virtanen", "")
 
     cursor.execute(
         """
@@ -344,7 +356,7 @@ def test_add_client_saves_email(
     )
 
     client_id = add_client(
-        user_ids["worker"],
+        user_ids["admin"],
         "Hilma",
         "Virtanen",
         email=" hilma@example.com "
@@ -381,7 +393,7 @@ def test_add_client_saves_null_email(
         get_test_connection
     )
 
-    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen")
+    client_id = add_client(user_ids["admin"], "Hilma", "Virtanen")
 
     cursor.execute(
         """
@@ -415,7 +427,7 @@ def test_add_client_saves_empty_email_as_null(
     )
 
     client_id = add_client(
-        user_ids["worker"],
+        user_ids["admin"],
         "Hilma",
         "Virtanen",
         email=""
@@ -495,7 +507,7 @@ def test_add_client_saves_street_address(
     )
 
     client_id = add_client(
-        user_ids["worker"],
+        user_ids["admin"],
         "Hilma",
         "Virtanen",
         street_address="  Kauppakatu 12  "
@@ -594,7 +606,7 @@ def test_add_client_saves_null_street_address(
         get_test_connection
     )
 
-    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen")
+    client_id = add_client(user_ids["admin"], "Hilma", "Virtanen")
 
     cursor.execute(
         "SELECT street_address FROM clients WHERE id = %s",
@@ -623,7 +635,7 @@ def test_add_client_saves_empty_street_address_as_null(
         get_test_connection
     )
 
-    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen", street_address="")
+    client_id = add_client(user_ids["admin"], "Hilma", "Virtanen", street_address="")
 
     cursor.execute(
         "SELECT street_address FROM clients WHERE id = %s",
@@ -655,7 +667,7 @@ def test_add_client_saves_postal_code(
         get_test_connection
     )
 
-    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen", postal_code=" 00100 ")
+    client_id = add_client(user_ids["admin"], "Hilma", "Virtanen", postal_code=" 00100 ")
 
     cursor.execute(
         "SELECT postal_code FROM clients WHERE id = %s",
@@ -684,7 +696,7 @@ def test_add_client_saves_null_postal_code(
         get_test_connection
     )
 
-    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen")
+    client_id = add_client(user_ids["admin"], "Hilma", "Virtanen")
 
     cursor.execute(
         "SELECT postal_code FROM clients WHERE id = %s",
@@ -713,7 +725,7 @@ def test_add_client_saves_empty_postal_code_as_null(
         get_test_connection
     )
 
-    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen", postal_code="")
+    client_id = add_client(user_ids["admin"], "Hilma", "Virtanen", postal_code="")
 
     cursor.execute(
         "SELECT postal_code FROM clients WHERE id = %s",
@@ -745,7 +757,7 @@ def test_add_client_saves_city(
         get_test_connection
     )
 
-    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen", city=" Tampere ")
+    client_id = add_client(user_ids["admin"], "Hilma", "Virtanen", city=" Tampere ")
 
     cursor.execute(
         "SELECT city FROM clients WHERE id = %s",
@@ -774,7 +786,7 @@ def test_add_client_saves_null_city(
         get_test_connection
     )
 
-    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen")
+    client_id = add_client(user_ids["admin"], "Hilma", "Virtanen")
 
     cursor.execute(
         "SELECT city FROM clients WHERE id = %s",
@@ -803,7 +815,7 @@ def test_add_client_saves_empty_city_as_null(
         get_test_connection
     )
 
-    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen", city="")
+    client_id = add_client(user_ids["admin"], "Hilma", "Virtanen", city="")
 
     cursor.execute(
         "SELECT city FROM clients WHERE id = %s",
@@ -836,7 +848,7 @@ def test_add_client_saves_distance(
     )
 
     client_id = add_client(
-        user_ids["worker"],
+        user_ids["admin"],
         "Hilma", "Virtanen", distance_from_home_km=3.5
     )
 
@@ -868,7 +880,7 @@ def test_client_distance_can_be_zero(
     )
 
     # 0 km is allowed, as in the database CHECK constraint
-    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen", distance_from_home_km=0)
+    client_id = add_client(user_ids["admin"], "Hilma", "Virtanen", distance_from_home_km=0)
 
     cursor.execute(
         "SELECT distance_from_home_km FROM clients WHERE id = %s",
@@ -912,7 +924,7 @@ def test_add_client_saves_null_distance(
         get_test_connection
     )
 
-    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen")
+    client_id = add_client(user_ids["admin"], "Hilma", "Virtanen")
 
     cursor.execute(
         "SELECT distance_from_home_km FROM clients WHERE id = %s",
@@ -1782,15 +1794,15 @@ def test_client_saves_creator_and_latest_editor(
         return client["created_by_user_id"], client["updated_by_user_id"]
 
     # The creator is not an owner: another user may change the client,
-    # and the creator stays the same.
-    client_id = add_client(worker_id, "Hilma", "Virtanen")
-    assert get_authors(client_id) == (worker_id, None)
+    # and the creator stays the same. Only an admin may add clients.
+    client_id = add_client(admin_id, "Hilma", "Virtanen")
+    assert get_authors(client_id) == (admin_id, None)
 
-    assert update_client(admin_id, client_id, {"city": "Tampere"}) is True
-    assert get_authors(client_id) == (worker_id, admin_id)
+    assert update_client(worker_id, client_id, {"city": "Tampere"}) is True
+    assert get_authors(client_id) == (admin_id, worker_id)
 
     assert archive_client(other_worker_id, client_id) is True
-    assert get_authors(client_id) == (worker_id, other_worker_id)
+    assert get_authors(client_id) == (admin_id, other_worker_id)
 
 
 def test_client_writes_reject_missing_and_inactive_users(
@@ -1812,7 +1824,7 @@ def test_client_writes_reject_missing_and_inactive_users(
         get_test_connection
     )
 
-    client_id = add_client(user_ids["worker"], "Hilma", "Virtanen")
+    client_id = add_client(user_ids["admin"], "Hilma", "Virtanen")
     inactive_id = user_ids["inactive"]
     missing_id = user_ids["admin"] + user_ids["worker"] + 1000
 
@@ -1831,3 +1843,65 @@ def test_client_writes_reject_missing_and_inactive_users(
     )
 
     assert cursor.fetchall() == [(client_id, None, None, None)]
+
+
+# AUTHORIZATION TESTS
+
+
+def test_add_client_rejects_worker(
+    postgres_cursor_with_clients,
+    user_ids,
+    connect_to_test_postgres,
+    monkeypatch
+):
+    # Regression test: only an admin may add clients (API contract v1.1)
+    cursor = postgres_cursor_with_clients
+
+    cursor.execute("SELECT current_database()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_postgres(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_postgres_connection",
+        get_test_connection
+    )
+
+    for worker_id in (user_ids["worker"], user_ids["other_worker"]):
+        with pytest.raises(PermissionError, match="Only an admin can add clients"):
+            add_client(worker_id, "Hilma", "Virtanen")
+
+    # Nothing was saved
+    cursor.execute("SELECT COUNT(*) FROM clients")
+
+    assert cursor.fetchone()[0] == 0
+
+
+def test_add_client_saves_admin_as_creator(
+    postgres_cursor_with_clients,
+    user_ids,
+    connect_to_test_postgres,
+    monkeypatch
+):
+    cursor = postgres_cursor_with_clients
+
+    cursor.execute("SELECT current_database()")
+    database = cursor.fetchone()[0]
+
+    def get_test_connection():
+        return connect_to_test_postgres(database=database)
+
+    monkeypatch.setattr(
+        "carelog.services.clients.get_postgres_connection",
+        get_test_connection
+    )
+
+    client_id = add_client(user_ids["admin"], "Hilma", "Virtanen")
+
+    cursor.execute(
+        "SELECT created_by_user_id, updated_by_user_id FROM clients WHERE id = %s",
+        (client_id,)
+    )
+
+    assert cursor.fetchone() == (user_ids["admin"], None)

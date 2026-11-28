@@ -82,7 +82,7 @@ export CARELOG_TEST_PG_HOST=127.0.0.1 CARELOG_TEST_PG_PORT=5434 CARELOG_TEST_PG_
 python -m pytest -v -rs
 ```
 
-Without these variables the database tests are skipped, so check that the summary shows 0 skipped. The tests refuse to run if the server is not marked as disposable or if it has the `carelog` database or the CareLog accounts. Stop the server afterwards with `docker stop carelog-postgres-test`.
+Without `CARELOG_TEST_PG_USER` the database tests are skipped, so check that the summary shows 0 skipped. When it is set, `CARELOG_TEST_PG_HOST` and `CARELOG_TEST_PG_PORT` are required too. The tests refuse to run unless the server is marked as disposable, has no databases other than the PostgreSQL defaults and temporary `carelog_test_*` databases, and has no CareLog accounts. They also refuse the address and user of the application's own database in `.env`. During the tests every other database connection is blocked, so a unit test that forgets to mock the connection fails instead of reaching a real database. Stop the server afterwards with `docker stop carelog-postgres-test`.
 
 Every test gets its own copy of a template database, which is migrated once per run with the same migration code as production. GitHub Actions runs the whole suite against PostgreSQL 16 on every push and pull request.
 
@@ -90,7 +90,7 @@ Every test gets its own copy of a template database, which is migrated once per 
 
 Users have the role `admin` or `worker`. Every service function that writes data or reads private records takes `actor_user_id`, the user who performs the operation. The role and the active state are always read from the database.
 
-- **Shared data:** clients, services and saved trips belong to the whole business.
+- **Shared data:** clients, services and saved trips belong to the whole business. Only an admin may add clients.
 - **Private records:** a visit belongs to its worker (`visits.user_id`), and so do its notes and trip legs. An expense has its own worker (`expenses.user_id`), which can differ from the worker of the visit. Mileage belongs to the worker of the visit.
 - **Worker:** sees and changes only their own private records. Another worker's record looks like a missing record.
 - **Admin:** sees and changes every worker's records, can add visits and expenses for other active workers, and can move a planned visit to another worker. The worker of a completed or cancelled visit never changes.
@@ -109,7 +109,7 @@ Users have the role `admin` or `worker`. Every service function that writes data
 - `actor_user_id` is trusted input until authentication exists.
 - A deactivation or role change that happens during a running write does not stop that write, because the application account cannot lock user rows.
 - Reading shared data does not check the user yet.
-- The rules for who may change shared data are not decided yet.
+- Apart from adding clients (admin only), the rules for who may change shared data are not decided yet.
 
 ## Project Structure
 

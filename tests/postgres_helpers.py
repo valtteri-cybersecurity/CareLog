@@ -4,6 +4,8 @@ import time
 import psycopg
 import pytest
 
+from tests.database_safety import DatabaseConnectionBlocked
+
 
 def table_exists(cursor, table):
     cursor.execute(
@@ -139,6 +141,10 @@ def start_in_thread(function, *args, **kwargs):
         try:
             outcome["result"] = function(*args, **kwargs)
         except Exception as error:
+            outcome["error"] = error
+        except DatabaseConnectionBlocked as error:
+            # Not an Exception, so it is caught separately to show the
+            # real cause in the test.
             outcome["error"] = error
         finally:
             done.set()

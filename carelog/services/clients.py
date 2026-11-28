@@ -10,7 +10,7 @@ from carelog.database.repositories.select_client import select_client
 from carelog.database.repositories.select_clients import select_clients
 from carelog.database.repositories.archive_client import archive_client_record
 from carelog.services.trips import validate_distance_km
-from carelog.services.user_validation import get_active_user, validate_user_id
+from carelog.services.user_validation import get_active_user, is_admin, validate_user_id
 
 
 def validate_postal_code(postal_code: str | None) -> str | None:
@@ -166,9 +166,16 @@ def add_client(
         connection = get_postgres_connection()
         cursor = connection.cursor()
 
-        get_active_user(cursor, actor_user_id)
+        # Only an admin may add clients (API contract v1.1). The role is
+        # read from the database, never taken from the caller. The
+        # database itself cannot check the role, because the application
+        # uses one shared database account.
+        actor = get_active_user(cursor, actor_user_id)
 
-        client_id = insert_client(cursor, actor_user_id, first_name, last_name, phone, email, street_address, postal_code, city, distance_from_home_km)
+        if not is_admin(actor):
+            raise PermissionError("Only an admin can add clients")
+
+        client_id = insert_client(cursor, actor["id"], first_name, last_name, phone, email, street_address, postal_code, city, distance_from_home_km)
         connection.commit()
         return client_id
 
